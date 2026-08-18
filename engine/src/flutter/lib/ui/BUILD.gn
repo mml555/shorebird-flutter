@@ -184,6 +184,17 @@ source_set("ui") {
     "//flutter/impeller/runtime_stage",
     "//flutter/runtime:dart_plugin_registrant",
     "//flutter/runtime:test_font",
+    # G15: platform_configuration.cc reports the launch outcome from the Dart
+    # startup boundary. `:updater` is a LEAF — its own deps are `//flutter/fml`
+    # plus the Rust static lib — so this edge adds no cycle, and `lib/ui` already
+    # public_deps on three other `//flutter/shell/common:*` targets, so it is not
+    # a novel inversion either.
+    #
+    # Caught by `gn --check` on the iOS build AFTER the host build had compiled
+    # the same file happily: adding an #include does not trigger a gn regen, so
+    # the dependency check simply never re-ran there. "It compiled" was true, and
+    # was never the same claim as "the dependency graph permits it".
+    "//flutter/shell/common/shorebird:updater",
     "//flutter/skia",
     "//flutter/third_party/rapidjson",
     "//flutter/third_party/tonic",

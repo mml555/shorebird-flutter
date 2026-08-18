@@ -13,6 +13,7 @@
 #include "flutter/lib/ui/window/platform_message_response_dart.h"
 #include "flutter/lib/ui/window/platform_message_response_dart_port.h"
 #include "flutter/lib/ui/window/viewport_metrics.h"
+#include "flutter/shell/common/shorebird/updater.h"
 #include "third_party/tonic/converter/dart_converter.h"
 #include "third_party/tonic/dart_args.h"
 #include "third_party/tonic/dart_library_natives.h"
@@ -544,6 +545,23 @@ void PlatformConfigurationNativeApi::SetNeedsReportTimings(bool value) {
       ->platform_configuration()
       ->client()
       ->SetNeedsReportTimings(value);
+}
+
+// G15: the launch outcome, reported from the DART startup boundary.
+//
+// DELIBERATELY THE THINNEST POSSIBLE SHIM. Everything that decides anything —
+// once-per-process arbitration, success-versus-failure precedence — already
+// lives in `shorebird::Updater`'s atomic latch, and duplicating any of it here
+// would create a second opinion about launch state that could disagree with the
+// first. No `UIDartState::ThrowIfUIOperationsProhibited()`: these are called
+// from the root isolate's startup path, and a launch report must not be able to
+// throw INTO the code whose success it is reporting on.
+void PlatformConfigurationNativeApi::ReportLaunchSuccess() {
+  shorebird::Updater::Instance().ReportLaunchSuccess();
+}
+
+void PlatformConfigurationNativeApi::ReportLaunchFailure() {
+  shorebird::Updater::Instance().ReportLaunchFailure();
 }
 
 namespace {

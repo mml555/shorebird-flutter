@@ -5113,10 +5113,21 @@ TEST_F(ShellTest, ShoulDiscardLayerTreeIfFrameIsSizedIncorrectly) {
   DestroyShell(std::move(shell), task_runners);
 }
 
-// Test the full boot flow: ReportLaunchStart is called from
-// ResolveIsolateData, then ReportLaunchSuccess from the Shell constructor.
-// Both are guarded to run at most once per process.
-TEST_F(ShellTest, ShorebirdBootFlowCallsLaunchStartThenSuccess) {
+// G15: creating a Shell reports launch START and nothing else.
+//
+// ~~"then ReportLaunchSuccess from the Shell constructor"~~ — that assertion is
+// gone, and it had ALREADY stopped describing this tree. Patch 0009 moved
+// success out of the constructor into `Shell::RunEngine`, which
+// `ShellTest::CreateShell` never calls, so this test was asserting a call that
+// could no longer happen here. Corrected rather than deleted, because the thing
+// it was pinning — that the boot flow reports exactly once — still matters.
+//
+// Success is now reported from DART, whichever comes first: `main` completing
+// or the first framework frame (`lib/ui/hooks.dart`). It is therefore not
+// observable from a C++ shell test that never runs a Dart entrypoint, and the
+// absence asserted below is the correct expectation rather than missing
+// coverage. The device gate is where success gets proven.
+TEST_F(ShellTest, ShorebirdBootFlowCallsLaunchStartOnly) {
   auto mock = std::make_unique<shorebird::MockUpdater>();
   auto* mock_ptr = mock.get();
   shorebird::Updater::SetInstanceForTesting(std::move(mock));
@@ -5128,9 +5139,12 @@ TEST_F(ShellTest, ShorebirdBootFlowCallsLaunchStartThenSuccess) {
   ASSERT_TRUE(shell);
 
   const auto& log = mock_ptr->call_log();
-  ASSERT_EQ(log.size(), 2u);
+  ASSERT_EQ(log.size(), 1u);
   EXPECT_EQ(log[0], "ReportLaunchStart");
-  EXPECT_EQ(log[1], "ReportLaunchSuccess");
+  // Neither outcome may be banked before user Dart has had its chance: success
+  // and failure share ONE latch, so a success recorded here would make the Dart
+  // seam permanently unreachable.
+  EXPECT_EQ(mock_ptr->launch_success_count(), 0);
 
   DestroyShell(std::move(shell), task_runners);
   shorebird::Updater::ResetLaunchStateForTesting();
@@ -5138,10 +5152,16 @@ TEST_F(ShellTest, ShorebirdBootFlowCallsLaunchStartThenSuccess) {
 }
 
 // In add-to-app, multiple engines may be created within a single process.
-// Only the first engine should report launch start/success to the Rust
-// updater. This prevents the updater from promoting a newly-downloaded patch
-// to "current_boot" when subsequent engines are still running the original
+// Only the first engine should report launch start to the Rust updater. This
+// prevents the updater from promoting a newly-downloaded patch to
+// "current_boot" when subsequent engines are still running the original
 // snapshot that was selected at process init time.
+//
+// G15: the success half of this expectation moved to Dart, so what is pinned
+// here is the START guard. Note that the once-per-PROCESS guard means a second
+// engine's `main` completing does not re-report either — correct, since both
+// engines boot from the same snapshot, but it is why the two-engine gate reads
+// per-engine `rbtrace` records rather than launch reports.
 TEST_F(ShellTest, ShorebirdUpdaterReportsOnlyOnceForMultipleShells) {
   auto mock = std::make_unique<shorebird::MockUpdater>();
   auto* mock_ptr = mock.get();
@@ -5150,25 +5170,25 @@ TEST_F(ShellTest, ShorebirdUpdaterReportsOnlyOnceForMultipleShells) {
 
   auto settings = CreateSettingsForFixture();
 
-  // Create first shell — gets Start + Success
+  // Create first shell — gets Start. Success comes from Dart, which no shell
+  // test runs, so it must stay at zero throughout.
   auto task_runners1 = GetTaskRunnersForFixture();
   auto shell1 = CreateShell(settings, task_runners1);
   ASSERT_TRUE(shell1);
   EXPECT_EQ(mock_ptr->launch_start_count(), 1);
-  EXPECT_EQ(mock_ptr->launch_success_count(), 1);
+  EXPECT_EQ(mock_ptr->launch_success_count(), 0);
 
-  // Create second shell — guarded, no additional Start or Success calls.
+  // Create second shell — guarded, no additional Start.
   auto task_runners2 = GetTaskRunnersForFixture();
   auto shell2 = CreateShell(settings, task_runners2);
   ASSERT_TRUE(shell2);
   EXPECT_EQ(mock_ptr->launch_start_count(), 1);
-  EXPECT_EQ(mock_ptr->launch_success_count(), 1);
+  EXPECT_EQ(mock_ptr->launch_success_count(), 0);
 
-  // Only one Start+Success pair in the call log.
+  // Exactly one Start in the call log, and nothing else.
   const auto& log = mock_ptr->call_log();
-  ASSERT_EQ(log.size(), 2u);
+  ASSERT_EQ(log.size(), 1u);
   EXPECT_EQ(log[0], "ReportLaunchStart");
-  EXPECT_EQ(log[1], "ReportLaunchSuccess");
 
   DestroyShell(std::move(shell1), task_runners1);
   DestroyShell(std::move(shell2), task_runners2);

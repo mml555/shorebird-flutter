@@ -524,17 +524,23 @@ Shell::Shell(DartVMRef vm,
       is_gpu_disabled_sync_switch_(new fml::SyncSwitch(is_gpu_disabled)),
       weak_factory_gpu_(nullptr),
       weak_factory_(this) {
-  // Report launch outcome to the Shorebird updater for crash recovery.
-  // If the VM failed to start, we report failure so the updater can roll
-  // back the patch. These calls are guarded inside Updater to execute at
-  // most once per process — only the first Shell's outcome is reported.
-  // In add-to-app, subsequent engines are silently ignored since they
-  // boot from the same snapshot that was already reported on.
-  // On unsupported platforms, NoOpUpdater handles these calls gracefully.
+  // Report launch FAILURE only. A null VM means Dart can never run, so the
+  // patch must be backed out and there is nothing later to wait for.
+  //
+  // SUCCESS IS NOT REPORTED HERE, and that is the point of G15. This is the
+  // Shell CONSTRUCTOR: the root isolate does not exist yet, so "the VM object
+  // was created" says nothing about whether the patch works. Banking success
+  // here means a Dart-phase failure caused by a patch can never back it out —
+  // success was already recorded before the patch had any opportunity to fail.
+  //
+  // ~~"Success now fires in Shell::RunEngine"~~ — SUPERSEDED. It fires from
+  // DART, whichever comes first: `main` completing or the first framework
+  // frame (`lib/ui/hooks.dart`). `Engine::Run` returns before any user Dart
+  // executes, so no point in this file can observe a Dart-phase outcome.
+  // These calls remain guarded inside Updater to execute at most once per
+  // process, and NoOpUpdater handles them gracefully on unsupported platforms.
   if (!vm_) {
     shorebird::Updater::Instance().ReportLaunchFailure();
-  } else {
-    shorebird::Updater::Instance().ReportLaunchSuccess();
   }
   FML_CHECK(!settings.enable_software_rendering || !settings.enable_impeller)
       << "Software rendering is incompatible with Impeller.";
@@ -811,6 +817,36 @@ void Shell::RunEngine(
             auto run_result = weak_engine->Run(std::move(run_configuration));
             if (run_result == flutter::Engine::RunStatus::Failure) {
               FML_LOG(ERROR) << "Could not launch engine with configuration.";
+            }
+
+            // G15: FAILURE ONLY. Success moved to the Dart startup boundary.
+            //
+            // ~~"This is the EARLIEST SUFFICIENT point"~~ — RETRACTED. Patch
+            // 0009 reported SUCCESS here on the belief that Engine::Run having
+            // returned meant the entrypoint had run. It does not:
+            // `_delayEntrypointInvocation` (isolate_patch.dart:288) POSTS main
+            // to a RawReceivePort and returns, so InvokeMainEntrypoint ->
+            // LaunchRootIsolate -> Engine::Run all return BEFORE one line of
+            // user Dart executes. The seam was not late by a margin, it was
+            // incapable in principle.
+            //
+            // REMOVING THE SUCCESS CALL IS LOAD-BEARING, not tidying.
+            // Updater's success and failure share ONE compare_exchange_strong
+            // latch, so a success banked here would take it and make the Dart
+            // seam permanently unreachable — it would compile, ship, and never
+            // fire.
+            //
+            // THE FAILURE CALL STAYS, and there is no race. A Run that returns
+            // Failure means the root isolate never started, so user Dart never
+            // runs and the Dart seam cannot report anything; the two paths are
+            // mutually exclusive. This is the only reporter that can see a
+            // failure BEFORE Dart exists.
+            //
+            // Success now fires from dart:ui, whichever comes first: `main`
+            // completing (hooks.dart `_runMain`) or the first framework frame
+            // (hooks.dart `_drawFrame`).
+            if (run_result == flutter::Engine::RunStatus::Failure) {
+              shorebird::Updater::Instance().ReportLaunchFailure();
             }
 
             result(run_result);

@@ -117,6 +117,20 @@ source_set("updater") {
   }
 }
 
+# Route B patch containers. Split out from :shorebird so the container reader
+# can be unit-tested without dragging in the updater and the whole shell.
+source_set("route_b_patch") {
+  sources = [
+    "route_b_patch.cc",
+    "route_b_patch.h",
+  ]
+
+  deps = [
+    "//flutter/fml",
+    "//flutter/third_party/rapidjson",
+  ]
+}
+
 source_set("shorebird") {
   sources = [
     "shorebird.cc",
@@ -124,6 +138,7 @@ source_set("shorebird") {
   ]
 
   deps = [
+    ":route_b_patch",
     ":snapshots_data_handle",
     ":updater",
     "//flutter/fml",
@@ -139,17 +154,55 @@ if (enable_unittests) {
     fixtures = []
   }
 
+  # A SLIM SIBLING of shorebird_unittests, and the reason it exists is a link
+  # failure, not a preference.
+  #
+  # shorebird_unittests compiles patch_cache_unittests.cc and deps
+  # //flutter/runtime/shorebird:patch_cache, whose patch_cache.cc calls
+  # Shorebird_ReadLinkHeader -- a symbol only Shorebird's private Dart fork
+  # defines. On this host build there is therefore an object file
+  # (shorebird_unittests.shorebird_unittests.o) and NO linked binary, so the
+  # arming tests that 0007 added have never actually EXECUTED. A compile earns
+  # nothing (PARITY's Status vocabulary), so the tests were pinning the contract
+  # on paper only.
+  #
+  # This target carries shorebird_unittests.cc alone and drops the patch_cache
+  # dep. Two facts make that legitimate rather than a workaround: source_set
+  # "shorebird" above does not depend on patch_cache, and //flutter/runtime gates
+  # that dep on shorebird_use_interpreter, which is `is_ios` in
+  # flutter/common/config.gni and is not overridden in this host build's args.gn
+  # -- so it is false here and the symbol is genuinely not needed.
+  #
+  # It must live INSIDE this if-block: at top level `:shorebird_fixtures` is an
+  # undefined label and gn errors out.
+  executable("shorebird_arming_unittests") {
+    testonly = true
+
+    sources = [ "shorebird_unittests.cc" ]
+
+    deps = [
+      ":shorebird",
+      ":shorebird_fixtures",
+      ":updater",
+      "//flutter/runtime",
+      "//flutter/testing",
+      "//flutter/testing:fixture_test",
+    ]
+  }
+
   executable("shorebird_unittests") {
     testonly = true
 
     sources = [
       "patch_cache_unittests.cc",
+      "route_b_patch_unittests.cc",
       "shorebird_unittests.cc",
       "snapshots_data_handle_unittests.cc",
       "updater_unittests.cc",
     ]
 
     deps = [
+      ":route_b_patch",
       ":shorebird",
       ":shorebird_fixtures",
       ":snapshots_data_handle",

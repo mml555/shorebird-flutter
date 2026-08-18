@@ -649,6 +649,18 @@ class PlatformConfigurationNativeApi {
 
   static void SetNeedsReportTimings(bool value);
 
+  /// G15: report the launch outcome from the DART startup boundary.
+  ///
+  /// Both feed `shorebird::Updater`'s EXISTING atomic latch, which already
+  /// arbitrates success against failure with one `compare_exchange_strong` —
+  /// the first caller of either wins and every later call is a no-op. That is
+  /// what makes `success = earliest(main completion, first framework frame)`
+  /// work with no new mechanism, and it is why these introduce NO lifecycle
+  /// state of their own at the `Shell` or raster level.
+  static void ReportLaunchSuccess();
+
+  static void ReportLaunchFailure();
+
   static Dart_Handle GetPersistentIsolateData();
 
   static Dart_Handle ComputePlatformResolvedLocale(

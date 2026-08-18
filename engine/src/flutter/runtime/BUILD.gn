@@ -120,7 +120,11 @@ source_set("runtime") {
     "//flutter/txt",
   ]
 
-  if (is_ios) {
+  # SELFHOST: follow shorebird_use_interpreter rather than is_ios. patch_cache.cc
+  # is the only thing in the tree that needs Shorebird's private Dart fork, and
+  # dart_snapshot.cc already includes its header under the same #if, so gating the
+  # dep here is what lets an iOS engine build against vanilla Dart.
+  if (shorebird_use_interpreter) {
     deps += [ "//flutter/runtime/shorebird:patch_cache" ]
   }
 }

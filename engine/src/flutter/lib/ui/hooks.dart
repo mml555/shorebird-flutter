@@ -392,8 +392,47 @@ void _reportTimings(List<int> timings) {
 
 @pragma('vm:entry-point')
 void _drawFrame() {
+  // G15, second banking condition: the FIRST FRAMEWORK FRAME.
+  //
+  // NAMED NARROWLY ON PURPOSE. This is the framework PRODUCING a frame. It is
+  // not presentation, not pixels, and not a usable UI — rasterization happens
+  // afterwards, on the raster thread. Do not restate it as "the app booted";
+  // describing a seam as proving more than it proves is exactly how the
+  // `Engine::Run` seam came to be believed.
+  //
+  // WHY HERE AND NOT IN `Shell`. `Shell::OnAnimatorDraw` posts to the raster
+  // task runner, so a reporter there would sit in another language on another
+  // thread, and this file's other reporter — the one around `main` — would not.
+  // Keeping both at the Dart/root-isolate startup boundary is what stops this
+  // from becoming a `Shell`/raster lifecycle mechanism.
+  //
+  // The `Updater` latch makes this idempotent, so no local guard is needed for
+  // correctness; `_g15FrameReported` exists only to avoid an FFI call on every
+  // single frame for the life of the process.
+  if (!_g15FrameReported) {
+    _g15FrameReported = true;
+    _g15ReportLaunchSuccess();
+  }
   PlatformDispatcher.instance._drawFrame();
 }
+
+bool _g15FrameReported = false;
+
+/// G15: report the launch outcome to the Shorebird updater.
+///
+/// Both sides feed ONE atomic latch in `shorebird::Updater`, which already
+/// arbitrates success against failure — the first caller of either wins. That
+/// is what implements `success = earliest(main completion, first framework
+/// frame)` without any new state, and it is also why a success banked at the
+/// first frame permanently suppresses a later `main` failure. **That is the
+/// accepted safety-policy trade-off, not an oversight:** it matches the
+/// updater's own asymmetry, where the cheap error is to retry and the expensive
+/// one is to tombstone a working patch.
+@Native<Void Function()>(symbol: 'PlatformConfigurationNativeApi::ReportLaunchSuccess')
+external void _g15ReportLaunchSuccess();
+
+@Native<Void Function()>(symbol: 'PlatformConfigurationNativeApi::ReportLaunchFailure')
+external void _g15ReportLaunchFailure();
 
 @pragma('vm:entry-point')
 bool _onError(Object error, StackTrace? stackTrace) {
@@ -406,10 +445,60 @@ typedef _ListStringArgFunction = Object? Function(List<String> args);
 void _runMain(Function startMainIsolateFunction, Function userMainFunction, List<String> args) {
   // ignore: avoid_dynamic_calls
   startMainIsolateFunction(() {
-    if (userMainFunction is _ListStringArgFunction) {
-      userMainFunction(args);
+    // G15, first banking condition: the completion of `main` ITSELF.
+    //
+    // WHY THIS EXACT SPOT, and why it cannot move. `userMainFunction` is the
+    // handle `Dart_GetField(library, "main")` resolved, threaded down from
+    // `InvokeMainEntrypoint`, so a wrapper here is bound to the app's `main` BY
+    // CONSTRUCTION rather than by ordinal or arrival order — which is what
+    // `tonic::DartMessageHandler::OnHandleMessage` could not offer. And the
+    // return value is discarded TWICE above this point (here as a statement,
+    // and again by `_delayEntrypointInvocation`'s port handler), so moving the
+    // seam one level up loses the async signal entirely.
+    //
+    // WHAT IS DELIBERATELY NOT DONE: nothing is caught that the application
+    // already handles. An app whose `main` wraps its own work in
+    // `runZonedGuarded` returns normally here, and that is CORRECT — reaching
+    // below this boundary to inspect errors the app dealt with would be
+    // reporting on application business, not on whether the patch booted.
+    final Object? result;
+    try {
+      if (userMainFunction is _ListStringArgFunction) {
+        result = userMainFunction(args);
+      } else {
+        result = userMainFunction(); // ignore: avoid_dynamic_calls
+      }
+    } catch (_) {
+      // A synchronous throw from `main` is a Dart-phase BOOT failure. Report it
+      // and then RETHROW, unchanged: `PlatformDispatcher.onError` fires only
+      // for UNHANDLED errors, so swallowing this would fix crash-backout by
+      // silently deleting the application's own error reporting.
+      _g15ReportLaunchFailure();
+      rethrow;
+    }
+
+    if (result is Future) {
+      // `main` is async. The Future is the ONLY completion signal — a
+      // synchronous return from an `async` function means the body was merely
+      // STARTED, which is the same "scheduling is not completion" mistake that
+      // made `Engine::Run` incapable in principle.
+      //
+      // `onError` forwards rather than consumes, for the same reason the
+      // synchronous path rethrows: attaching a handler marks the error handled
+      // and would suppress the app's own reporting.
+      result.then<void>(
+        (_) => _g15ReportLaunchSuccess(),
+        onError: (Object error, StackTrace stackTrace) {
+          _g15ReportLaunchFailure();
+          Zone.current.handleUncaughtError(error, stackTrace);
+        },
+      );
+      // NOT reported here. A `main` that returns a Future which never completes
+      // is neither a success nor a failure — it is still running, and treating
+      // "not yet completed" as either would tombstone every slow boot. That
+      // shape banks via the first framework frame instead; see `_drawFrame`.
     } else {
-      userMainFunction(); // ignore: avoid_dynamic_calls
+      _g15ReportLaunchSuccess();
     }
   }, null);
 }
