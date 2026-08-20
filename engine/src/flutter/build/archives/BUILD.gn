@@ -253,7 +253,12 @@ if (build_engine_artifacts && !flutter_prebuilt_dart_sdk) {
       deps += [ ":dart_sdk_entitlement_config" ]
       files += [
         {
-          source = "$target_gen_dir/dart_sdk_entitlements.txt"
+          # rebase_path is REQUIRED: zip.py resolves `source` against the
+          # filesystem, but a bare $target_gen_dir is GN source-absolute
+          # ("//out/..."), which becomes "/out/..." and does not exist. The
+          # dart-sdk entry above rebases; this one did not, so
+          # dart-sdk-darwin-<cpu>.zip failed with FileNotFoundError.
+          source = rebase_path("$target_gen_dir/dart_sdk_entitlements.txt")
           destination = "entitlements.txt"
         },
       ]
