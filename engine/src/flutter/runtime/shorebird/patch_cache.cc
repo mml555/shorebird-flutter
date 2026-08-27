@@ -151,8 +151,8 @@ std::shared_ptr<const fml::Mapping> TryLoadFromPatch(
 
   FML_LOG(INFO) << "Loading symbol from patch: " << symbol_name;
 
-  // ReportLaunchStart is now called from ResolveIsolateData in
-  // dart_snapshot.cc, which runs before TryLoadFromPatch on all platforms.
+  // No launch reporting anywhere on this path. Attribution happens inside
+  // Updater::PrepareNextBootPatch(), which is also what chose `patch_path`.
 
   if (symbol == kIsolateDataSymbol) {
     return PatchMapping::CreateIsolateData(cache_entry);

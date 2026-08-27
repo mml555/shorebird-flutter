@@ -54,26 +54,55 @@ struct AppConfig {
 /// 2. Future migration from Rust to C++ implementation
 /// 3. Test instrumentation (call counting, logging)
 ///
-/// ## Launch lifecycle (start/success/failure)
+/// ## Boot preparation is ONE operation, not a sequence
 ///
-/// The Rust updater uses a start/success/failure protocol to detect crashes:
-/// - `ReportLaunchStart` copies `next_boot` → `current_boot` in the Rust
-///   state. If the app crashes before `ReportLaunchSuccess`, the updater
-///   assumes the patch caused the crash and rolls back on the next launch.
+/// `PrepareNextBootPatch()` validates the candidate, tombstones it if it is
+/// unusable, selects what will actually run, records that selection as the
+/// booting patch, and returns its path — all inside a single updater state
+/// transition. The invariant it exists to hold:
 ///
-/// These calls are guarded to execute at most once per process because:
-/// 1. The Rust updater is a process-global singleton — calling
-///    `report_launch_start` multiple times would repeatedly copy `next_boot`
-///    → `current_boot`, which could promote a newly-downloaded (but not yet
-///    booted) patch to "current" even though the running engine loaded the
-///    old snapshot.
-/// 2. In add-to-app, multiple FlutterEngines may be created and destroyed
-///    within a single process. Each engine creation resolves snapshots and
-///    constructs a Shell, but we must only report launch start/success once
-///    — for the first engine that actually boots. Without this guard, a
-///    background update that completes between engine creations would get
-///    promoted to "current" by the second engine's `ReportLaunchStart`,
-///    even though that engine is still running the old snapshot.
+///   the patch recorded as `currently_booting` == the patch whose path is
+///   returned here == the patch the VM is handed
+///
+/// This REPLACES the former three-call sequence `ValidateNextBootPatch()` →
+/// `NextBootPatchPath()` → `ReportLaunchStart()`, which could not hold that
+/// invariant because the three steps read the candidate pointer at three
+/// different times. On iOS they were interleaved in the worst possible order:
+/// `SetBaseSnapshot()` resolves the base isolate snapshot, which reached
+/// `ResolveIsolateData()` in runtime/dart_snapshot.cc and reported launch start
+/// one line BEFORE `ValidateNextBootPatch()` ran. A patch rejected for a bad
+/// signature was therefore correctly refused execution while remaining credited
+/// as the booting patch; the next `ReportLaunchSuccess()` promoted it, and
+/// `cleanup_older_than` then deleted the last-known-good patch that had really
+/// booted, dropping the following launch to the base release.
+///
+/// Measured on device, with the log excerpt, in
+/// `selfhost/evidence/p6-signing/ARM_C_EXECUTION_IDENTITY.md`. There was no
+/// security defect — the rejected bytes never executed — but the bookkeeping
+/// destroyed the fallback the refusal exists to preserve. The single-call shape
+/// is what makes that class of disagreement unrepresentable rather than merely
+/// unlikely.
+///
+/// The old two accessors are deliberately GONE from this interface rather than
+/// left in place unused: while they exist, a future caller can reassemble the
+/// broken ordering without noticing.
+///
+/// ## Once per process
+///
+/// Preparation and success/failure reporting are each guarded to run at most
+/// once per process, because:
+/// 1. The Rust updater is a process-global singleton — preparing twice would
+///    re-read `next_boot` and could promote a newly-downloaded (but not yet
+///    booted) patch even though the running engine loaded the old snapshot.
+/// 2. In add-to-app, multiple FlutterEngines may be created and destroyed in
+///    one process. Each creation resolves snapshots and constructs a Shell, but
+///    only the first actually boots.
+///
+/// A second `PrepareNextBootPatch()` call therefore does NOT re-prepare: it
+/// returns the path the first call returned, cached. Returning an empty string
+/// instead would silently downgrade a later engine to the base release, and
+/// re-preparing would break the invariant above. Both halves matter, so both
+/// are pinned by test.
 ///
 /// Tests can call `ResetLaunchStateForTesting()` to re-enable the guards.
 class Updater {
@@ -86,17 +115,21 @@ class Updater {
   /// @return true if initialization succeeded
   virtual bool Init(const AppConfig& config) = 0;
 
-  /// Validate the next boot patch. If invalid, falls back to last good state.
-  virtual void ValidateNextBootPatch() = 0;
-
-  /// Get the path to the patch that will boot on next run.
-  /// @return Path to patch, or empty string if no patch available
-  virtual std::string NextBootPatchPath() = 0;
+  /// Prepare the next boot and return the path the VM must ACTUALLY execute.
+  ///
+  /// Validation, selection and launch attribution happen together; see the
+  /// class comment. A rejected candidate yields the last-known-good patch, and
+  /// that is a success, not an error.
+  ///
+  /// Guarded to run at most once per process: a second call returns the first
+  /// call's path without touching updater state.
+  ///
+  /// @return Path to the patch to boot, or empty string for the base release.
+  std::string PrepareNextBootPatch();
 
   // Boot lifecycle methods — guarded to run at most once per process.
   // Callers may call these freely; subsequent calls after the first are
   // silently ignored.
-  void ReportLaunchStart();
   void ReportLaunchSuccess();
   void ReportLaunchFailure();
 
@@ -119,7 +152,7 @@ class Updater {
   Updater() = default;
 
   // Subclass hooks — called by the public guarded methods above.
-  virtual void DoReportLaunchStart() = 0;
+  virtual std::string DoPrepareNextBootPatch() = 0;
   virtual void DoReportLaunchSuccess() = 0;
   virtual void DoReportLaunchFailure() = 0;
 
@@ -127,8 +160,12 @@ class Updater {
   static std::unique_ptr<Updater> instance_;
   static std::mutex instance_mutex_;
 
-  // Once-per-process guards for launch lifecycle.
-  static std::atomic<bool> launch_started_;
+  // Once-per-process guards for the launch lifecycle. `prepare_mutex_` also
+  // protects `prepared_path_`, so a second engine racing the first observes the
+  // finished result rather than an empty string mid-preparation.
+  static std::mutex prepare_mutex_;
+  static bool boot_prepared_;
+  static std::string prepared_path_;
   static std::atomic<bool> launch_completed_;
 };
 
@@ -140,9 +177,7 @@ class NoOpUpdater : public Updater {
   ~NoOpUpdater() override = default;
 
   bool Init(const AppConfig& config) override { return true; }
-  void ValidateNextBootPatch() override {}
-  std::string NextBootPatchPath() override { return ""; }
-  void DoReportLaunchStart() override {}
+  std::string DoPrepareNextBootPatch() override { return ""; }
   void DoReportLaunchSuccess() override {}
   void DoReportLaunchFailure() override {}
   bool ShouldAutoUpdate() override { return false; }
@@ -158,9 +193,7 @@ class RealUpdater : public Updater {
   ~RealUpdater() override = default;
 
   bool Init(const AppConfig& config) override;
-  void ValidateNextBootPatch() override;
-  std::string NextBootPatchPath() override;
-  void DoReportLaunchStart() override;
+  std::string DoPrepareNextBootPatch() override;
   void DoReportLaunchSuccess() override;
   void DoReportLaunchFailure() override;
   bool ShouldAutoUpdate() override;
@@ -176,9 +209,7 @@ class MockUpdater : public Updater {
   ~MockUpdater() override = default;
 
   bool Init(const AppConfig& config) override;
-  void ValidateNextBootPatch() override;
-  std::string NextBootPatchPath() override;
-  void DoReportLaunchStart() override;
+  std::string DoPrepareNextBootPatch() override;
   void DoReportLaunchSuccess() override;
   void DoReportLaunchFailure() override;
   bool ShouldAutoUpdate() override;
@@ -186,8 +217,7 @@ class MockUpdater : public Updater {
 
   // Test accessors
   int init_count() const { return init_count_; }
-  int validate_count() const { return validate_count_; }
-  int launch_start_count() const { return launch_start_count_; }
+  int prepare_count() const { return prepare_count_; }
   int launch_success_count() const { return launch_success_count_; }
   int launch_failure_count() const { return launch_failure_count_; }
   int start_update_thread_count() const { return start_update_thread_count_; }
@@ -211,8 +241,7 @@ class MockUpdater : public Updater {
 
  private:
   int init_count_ = 0;
-  int validate_count_ = 0;
-  int launch_start_count_ = 0;
+  int prepare_count_ = 0;
   int launch_success_count_ = 0;
   int launch_failure_count_ = 0;
   int start_update_thread_count_ = 0;

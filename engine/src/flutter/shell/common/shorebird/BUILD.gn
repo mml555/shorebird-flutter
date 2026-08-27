@@ -178,7 +178,17 @@ if (enable_unittests) {
   executable("shorebird_arming_unittests") {
     testonly = true
 
-    sources = [ "shorebird_unittests.cc" ]
+    # updater_unittests.cc joins this target for the SAME reason the target
+    # exists: it is compiled by shorebird_unittests, which does not link here,
+    # so those tests had never executed either. They need only updater.h and
+    # gtest -- no patch_cache -- so they link in this slim target and now
+    # actually run. The boot-preparation invariant they pin (attribution equals
+    # the returned patch, and a second engine gets the same answer without
+    # re-preparing) is not something to hold on paper.
+    sources = [
+      "shorebird_unittests.cc",
+      "updater_unittests.cc",
+    ]
 
     deps = [
       ":shorebird",

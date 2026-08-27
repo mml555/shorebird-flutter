@@ -17,7 +17,6 @@
 #if SHOREBIRD_USE_INTERPRETER
 #include "flutter/runtime/shorebird/patch_cache.h"  // nogncheck
 #endif
-#include "flutter/shell/common/shorebird/updater.h"  // nogncheck
 
 namespace flutter {
 
@@ -152,12 +151,15 @@ static std::shared_ptr<const fml::Mapping> ResolveIsolateData(
                                                 true      // dontneed_safe
   );
 #else  // DART_SNAPSHOT_STATIC_LINK
-  // Tell the Rust updater we're booting from whatever patch it selected.
-  // This copies next_boot → current_boot in the Rust state. The call is
-  // guarded inside Updater to execute at most once per process — see the
-  // Updater class comment for why this matters in add-to-app and
-  // FlutterEngineGroup scenarios.
-  shorebird::Updater::Instance().ReportLaunchStart();
+  // NO LAUNCH REPORTING HERE. Attribution belongs to
+  // Updater::PrepareNextBootPatch(), which records the patch it returns.
+  //
+  // This is where the defect lived. On iOS, ConfigureShorebird() calls
+  // SetBaseSnapshot() -> IsolateSnapshotFromSettings() -> here, ONE LINE before
+  // it validated the candidate. So the launch was attributed to the unvalidated
+  // next_boot patch; when validation then rejected it, nothing corrected the
+  // attribution, and the following ReportLaunchSuccess() promoted a patch that
+  // never ran. See selfhost/evidence/p6-signing/ARM_C_EXECUTION_IDENTITY.md.
 #if SHOREBIRD_USE_INTERPRETER
   // Try loading from a Shorebird patch first.
   if (auto mapping = TryLoadFromPatch(settings.application_library_paths,

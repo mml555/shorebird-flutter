@@ -5113,21 +5113,29 @@ TEST_F(ShellTest, ShoulDiscardLayerTreeIfFrameIsSizedIncorrectly) {
   DestroyShell(std::move(shell), task_runners);
 }
 
-// G15: creating a Shell reports launch START and nothing else.
+// Shell creation must make NO updater lifecycle calls at all.
 //
-// ~~"then ReportLaunchSuccess from the Shell constructor"~~ — that assertion is
-// gone, and it had ALREADY stopped describing this tree. Patch 0009 moved
-// success out of the constructor into `Shell::RunEngine`, which
-// `ShellTest::CreateShell` never calls, so this test was asserting a call that
-// could no longer happen here. Corrected rather than deleted, because the thing
-// it was pinning — that the boot flow reports exactly once — still matters.
+// It used to make exactly one: `ResolveIsolateData` in runtime/dart_snapshot.cc
+// reported launch start while resolving the isolate snapshot. That is precisely
+// what broke attribution -- on iOS, `ConfigureShorebird` resolves the base
+// snapshot via `SetBaseSnapshot()` one line BEFORE it validates the candidate,
+// so the launch was credited to a patch that had not been checked yet, and a
+// patch later rejected for a bad signature stayed credited. See
+// selfhost/evidence/p6-signing/ARM_C_EXECUTION_IDENTITY.md.
 //
-// Success is now reported from DART, whichever comes first: `main` completing
-// or the first framework frame (`lib/ui/hooks.dart`). It is therefore not
-// observable from a C++ shell test that never runs a Dart entrypoint, and the
-// absence asserted below is the correct expectation rather than missing
-// coverage. The device gate is where success gets proven.
-TEST_F(ShellTest, ShorebirdBootFlowCallsLaunchStartOnly) {
+// Validation, selection and attribution are now one call,
+// `Updater::PrepareNextBootPatch()`, made from `ConfigureShorebird` -- which a
+// unit test cannot reach (it opens with an FML_CHECK on the VM snapshot; the
+// same limitation is documented in shorebird/shorebird_unittests.cc). So what a
+// shell test can still prove, and what is worth proving, is the ABSENCE: no
+// snapshot-resolution path may re-enter the updater's launch lifecycle. This is
+// the regression guard against reintroducing the ordering that caused the bug.
+//
+// Success reporting comes from Dart (`main` completing or the first framework
+// frame in lib/ui/hooks.dart), which no shell test runs, so its absence here is
+// also the correct expectation rather than missing coverage. The device gate is
+// where the positive path gets proven.
+TEST_F(ShellTest, ShorebirdShellCreationMakesNoUpdaterLifecycleCalls) {
   auto mock = std::make_unique<shorebird::MockUpdater>();
   auto* mock_ptr = mock.get();
   shorebird::Updater::SetInstanceForTesting(std::move(mock));
@@ -5138,31 +5146,27 @@ TEST_F(ShellTest, ShorebirdBootFlowCallsLaunchStartOnly) {
   auto shell = CreateShell(settings, task_runners);
   ASSERT_TRUE(shell);
 
-  const auto& log = mock_ptr->call_log();
-  ASSERT_EQ(log.size(), 1u);
-  EXPECT_EQ(log[0], "ReportLaunchStart");
+  EXPECT_TRUE(mock_ptr->call_log().empty())
+      << "boot preparation belongs to ConfigureShorebird, not to snapshot "
+         "resolution; a call here means the ordering defect is back";
+  EXPECT_EQ(mock_ptr->prepare_count(), 0);
   // Neither outcome may be banked before user Dart has had its chance: success
   // and failure share ONE latch, so a success recorded here would make the Dart
   // seam permanently unreachable.
   EXPECT_EQ(mock_ptr->launch_success_count(), 0);
+  EXPECT_EQ(mock_ptr->launch_failure_count(), 0);
 
   DestroyShell(std::move(shell), task_runners);
   shorebird::Updater::ResetLaunchStateForTesting();
   shorebird::Updater::ResetInstanceForTesting();
 }
 
-// In add-to-app, multiple engines may be created within a single process.
-// Only the first engine should report launch start to the Rust updater. This
-// prevents the updater from promoting a newly-downloaded patch to
-// "current_boot" when subsequent engines are still running the original
-// snapshot that was selected at process init time.
-//
-// G15: the success half of this expectation moved to Dart, so what is pinned
-// here is the START guard. Note that the once-per-PROCESS guard means a second
-// engine's `main` completing does not re-report either — correct, since both
-// engines boot from the same snapshot, but it is why the two-engine gate reads
-// per-engine `rbtrace` records rather than launch reports.
-TEST_F(ShellTest, ShorebirdUpdaterReportsOnlyOnceForMultipleShells) {
+// The add-to-app shape: several engines in one process. None of them may reach
+// the updater's launch lifecycle from Shell creation, so the count stays at zero
+// however many shells exist. The per-engine behaviour that DOES vary is Route B
+// activation, which is why the two-engine gate reads per-engine `rbtrace`
+// records rather than launch reports.
+TEST_F(ShellTest, ShorebirdMultipleShellsMakeNoUpdaterLifecycleCalls) {
   auto mock = std::make_unique<shorebird::MockUpdater>();
   auto* mock_ptr = mock.get();
   shorebird::Updater::SetInstanceForTesting(std::move(mock));
@@ -5170,25 +5174,17 @@ TEST_F(ShellTest, ShorebirdUpdaterReportsOnlyOnceForMultipleShells) {
 
   auto settings = CreateSettingsForFixture();
 
-  // Create first shell — gets Start. Success comes from Dart, which no shell
-  // test runs, so it must stay at zero throughout.
   auto task_runners1 = GetTaskRunnersForFixture();
   auto shell1 = CreateShell(settings, task_runners1);
   ASSERT_TRUE(shell1);
-  EXPECT_EQ(mock_ptr->launch_start_count(), 1);
-  EXPECT_EQ(mock_ptr->launch_success_count(), 0);
+  EXPECT_TRUE(mock_ptr->call_log().empty());
 
-  // Create second shell — guarded, no additional Start.
   auto task_runners2 = GetTaskRunnersForFixture();
   auto shell2 = CreateShell(settings, task_runners2);
   ASSERT_TRUE(shell2);
-  EXPECT_EQ(mock_ptr->launch_start_count(), 1);
+  EXPECT_TRUE(mock_ptr->call_log().empty());
+  EXPECT_EQ(mock_ptr->prepare_count(), 0);
   EXPECT_EQ(mock_ptr->launch_success_count(), 0);
-
-  // Exactly one Start in the call log, and nothing else.
-  const auto& log = mock_ptr->call_log();
-  ASSERT_EQ(log.size(), 1u);
-  EXPECT_EQ(log[0], "ReportLaunchStart");
 
   DestroyShell(std::move(shell1), task_runners1);
   DestroyShell(std::move(shell2), task_runners2);

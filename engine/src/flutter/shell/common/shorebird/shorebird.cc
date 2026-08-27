@@ -178,7 +178,7 @@ std::string GetValueFromYaml(const std::string& yaml, const std::string& key) {
 // HOW a Route B patch becomes live. That ownership split is why this is a
 // separate hook armed from the tail of ConfigureShorebird rather than more code
 // inside it, and it is why the path handed in here is the one
-// NextBootPatchPath() already chose.
+// PrepareNextBootPatch() already chose.
 //
 // TIMING. root_isolate_create_callback fires at dart_isolate.cc:163, inside a
 // tonic::DartState::Scope: after the isolate exists and its libraries are
@@ -569,8 +569,11 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
   // https://github.com/shorebirdtech/shorebird/issues/950
 
   FML_LOG(INFO) << "Checking for active patch";
-  shorebird::Updater::Instance().ValidateNextBootPatch();
-  std::string active_path = shorebird::Updater::Instance().NextBootPatchPath();
+  // ONE call: validate, select, attribute. See the Updater class comment --
+  // splitting these apart is what let a rejected patch stay credited as the
+  // booting patch and get the last-known-good one deleted.
+  std::string active_path =
+      shorebird::Updater::Instance().PrepareNextBootPatch();
   if (!active_path.empty()) {
     patch_path = active_path;
     FML_LOG(INFO) << "Shorebird updater: patch path: " << patch_path;
@@ -578,10 +581,9 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
     FML_LOG(INFO) << "Shorebird updater: no active patch.";
   }
 
-  // Note: shorebird_report_launch_start() is now called from TryLoadFromPatch()
-  // in runtime/shorebird/patch_cache.cc, right before the patched snapshot is
-  // actually loaded. This fixes issues with FlutterEngineGroup and other cases
-  // where ConfigureShorebird() is called but no Shell is created.
+  // Launch attribution is no longer a separate step: PrepareNextBootPatch()
+  // above recorded the patch it returned as the one booting, which is the only
+  // way to keep those two facts from disagreeing.
   if (!init_result) {
     return false;
   }
@@ -647,8 +649,11 @@ void ConfigureShorebird(std::string code_cache_path,
   SetBaseSnapshot(settings);
 #endif
 
-  shorebird::Updater::Instance().ValidateNextBootPatch();
-  std::string active_path = shorebird::Updater::Instance().NextBootPatchPath();
+  // ONE call: validate, select, attribute. See the Updater class comment --
+  // splitting these apart is what let a rejected patch stay credited as the
+  // booting patch and get the last-known-good one deleted.
+  std::string active_path =
+      shorebird::Updater::Instance().PrepareNextBootPatch();
 
   // The Route B container this boot will activate, if the active artifact is
   // one. Empty otherwise, which leaves the hook inert.
@@ -707,10 +712,8 @@ void ConfigureShorebird(std::string code_cache_path,
     FML_LOG(INFO) << "Shorebird updater: no active patch.";
   }
 
-  // Note: shorebird_report_launch_start() is now called from TryLoadFromPatch()
-  // in runtime/shorebird/patch_cache.cc, right before the patched snapshot is
-  // actually loaded. This fixes issues with FlutterEngineGroup and other cases
-  // where ConfigureShorebird() is called but no Shell is created.
+  // Launch attribution is no longer a separate step: PrepareNextBootPatch()
+  // above recorded the patch it returned as the one booting.
 
   // SEAM 6: the lifecycle above has decided WHICH patch is active, and the
   // content sniff decided whether it is a Route B container. Arming the hook
@@ -739,15 +742,16 @@ void ConfigureShorebird(std::string code_cache_path,
   //   * second call  -- the updater is already initialized from the first, so
   //                     the patch resolution above ran normally and
   //                     `route_b_path` is correct.
-  //   * genuine init failure -- `NextBootPatchPath` yields nothing, so
+  //   * genuine init failure -- `PrepareNextBootPatch` yields nothing, so
   //                     `route_b_path` is empty and
   //                     `InstallRouteBActivationHook` returns inert.
   //
-  // Note the precedent directly above: `shorebird_report_launch_start` was moved
-  // out of here for the same class of reason ("FlutterEngineGroup and other cases
-  // where ConfigureShorebird() is called but no Shell is created"). The launch
-  // reporting was fixed for multi-engine; the Route B arming was left behind the
-  // guard.
+  // Note the precedent directly above: `shorebird_report_launch_start` was once
+  // moved out of here for the same class of reason ("FlutterEngineGroup and other
+  // cases where ConfigureShorebird() is called but no Shell is created"). That
+  // move is what put launch attribution ahead of validation on iOS; attribution
+  // now lives inside PrepareNextBootPatch() instead, and the multi-engine
+  // concern is handled by that call's cache rather than by relocating it.
   InstallRouteBActivationHook(settings, route_b_path);
 
   if (!init_result) {

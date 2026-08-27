@@ -16,7 +16,9 @@ namespace shorebird {
 // Static member definitions
 std::unique_ptr<Updater> Updater::instance_;
 std::mutex Updater::instance_mutex_;
-std::atomic<bool> Updater::launch_started_{false};
+std::mutex Updater::prepare_mutex_;
+bool Updater::boot_prepared_ = false;
+std::string Updater::prepared_path_;
 std::atomic<bool> Updater::launch_completed_{false};
 
 Updater& Updater::Instance() {
@@ -42,18 +44,26 @@ void Updater::ResetInstanceForTesting() {
 }
 
 void Updater::ResetLaunchStateForTesting() {
-  launch_started_.store(false);
+  {
+    std::lock_guard<std::mutex> lock(prepare_mutex_);
+    boot_prepared_ = false;
+    prepared_path_.clear();
+  }
   launch_completed_.store(false);
 }
 
-void Updater::ReportLaunchStart() {
-  // Guard: only the first engine in a process should promote next_boot →
-  // current_boot in the Rust updater. See class-level comment for rationale.
-  bool expected = false;
-  if (!launch_started_.compare_exchange_strong(expected, true)) {
-    return;
+std::string Updater::PrepareNextBootPatch() {
+  // Guard: only the first engine in a process prepares a boot. A later engine
+  // gets the SAME answer -- not a fresh preparation (which would re-attribute
+  // the launch to whatever has since been downloaded) and not an empty string
+  // (which would silently downgrade it to the base release).
+  std::lock_guard<std::mutex> lock(prepare_mutex_);
+  if (boot_prepared_) {
+    return prepared_path_;
   }
-  DoReportLaunchStart();
+  prepared_path_ = DoPrepareNextBootPatch();
+  boot_prepared_ = true;
+  return prepared_path_;
 }
 
 void Updater::ReportLaunchSuccess() {
@@ -103,22 +113,17 @@ bool RealUpdater::Init(const AppConfig& config) {
   return shorebird_init(&params, rust_callbacks, config.yaml_config.c_str());
 }
 
-void RealUpdater::ValidateNextBootPatch() {
-  shorebird_validate_next_boot_patch();
-}
-
-std::string RealUpdater::NextBootPatchPath() {
-  char* c_path = shorebird_next_boot_patch_path();
+std::string RealUpdater::DoPrepareNextBootPatch() {
+  // NULL means "boot the base release". That covers both a genuine absence of
+  // any usable patch and an internal updater error, which is the fail-closed
+  // direction: never hand the VM an artifact the updater could not vouch for.
+  char* c_path = shorebird_prepare_next_boot_patch();
   if (c_path == nullptr) {
     return "";
   }
   std::string path(c_path);
   shorebird_free_string(c_path);
   return path;
-}
-
-void RealUpdater::DoReportLaunchStart() {
-  shorebird_report_launch_start();
 }
 
 void RealUpdater::DoReportLaunchSuccess() {
@@ -148,19 +153,10 @@ bool MockUpdater::Init(const AppConfig& config) {
   return init_result_;
 }
 
-void MockUpdater::ValidateNextBootPatch() {
-  validate_count_++;
-  call_log_.push_back("ValidateNextBootPatch");
-}
-
-std::string MockUpdater::NextBootPatchPath() {
-  call_log_.push_back("NextBootPatchPath");
+std::string MockUpdater::DoPrepareNextBootPatch() {
+  prepare_count_++;
+  call_log_.push_back("PrepareNextBootPatch");
   return next_boot_patch_path_;
-}
-
-void MockUpdater::DoReportLaunchStart() {
-  launch_start_count_++;
-  call_log_.push_back("ReportLaunchStart");
 }
 
 void MockUpdater::DoReportLaunchSuccess() {
@@ -185,8 +181,7 @@ void MockUpdater::StartUpdateThread() {
 
 void MockUpdater::Reset() {
   init_count_ = 0;
-  validate_count_ = 0;
-  launch_start_count_ = 0;
+  prepare_count_ = 0;
   launch_success_count_ = 0;
   launch_failure_count_ = 0;
   start_update_thread_count_ = 0;
