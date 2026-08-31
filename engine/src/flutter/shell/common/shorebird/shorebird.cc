@@ -1,6 +1,43 @@
 
 #include "flutter/shell/common/shorebird/shorebird.h"
 
+// ---------------------------------------------------------------------------
+// Route B 2C candidate identity. NOT A PRODUCT FEATURE, NOT RUNTIME STATE.
+//
+// WHY THIS EXISTS. A Route B compiler cell is keyed by the release's recorded
+// engine revision, and our engine publishes under sha1 of the built device-slice
+// Flutter binary. Qualifying the direct-super compiler therefore needs a
+// candidate engine artifact whose hash differs from the certified one — and the
+// engine SOURCE REVISION does not reach those bytes: `engine_version` is
+// compiled into `shell/version` as FLUTTER_ENGINE_VERSION and the release iOS
+// link strips it (measured: the certified device slice contains no
+// 619fdad176ff…, and GetFlutterEngineVersion has no symbol).
+//
+// So the candidate earns a distinct artifact identity from an explicit,
+// non-executable datum rather than from a behavioural change, a timestamp, or a
+// fabricated engine.version.
+//
+// PROPERTIES, each deliberate:
+//   * iOS only — the hash being earned is the iOS device engine artifact.
+//   * `no_dead_strip` section, because `used` alone is not enough on Mach-O and
+//     `static const` is removed outright (both measured against this tree's
+//     pinned Clang with -dead_strip and LTO, in the `-shared` link mode the
+//     framework actually uses).
+//   * placed in its own __DATA section, so it adds no exported symbol.
+//   * never read, never logged, never branched on. Nothing may come to depend
+//     on it; it exists to be present.
+//
+// It must NOT be confused with the updater's revision, which is a separate
+// certified provenance chain and is unchanged by this commit.
+#if defined(FML_OS_IOS)
+extern "C" {
+__attribute__((used, section("__DATA,__shorebird,regular,no_dead_strip")))
+const char kShorebirdRouteB2CCandidateMarker[] =
+    "shorebird-route-b-2c-candidate-v1";
+}
+#endif  // defined(FML_OS_IOS)
+// ---------------------------------------------------------------------------
+
 #include <cstddef>
 #include <cstdlib>
 #include <memory>
