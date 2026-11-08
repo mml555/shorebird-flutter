@@ -17,10 +17,10 @@ vars = {
   'llvm_git': 'https://llvm.googlesource.com',
   'dart_ai_rev': '9c96bfe5f091c9451eff5b59c9bffeb2e806b875',
   'skia_revision': '8df24be66531469e576a806749a0202ae26b8d08',
-  "dart_sdk_revision": "9b3d44926018e4141fdab274259cec3bec231250",
-  "dart_sdk_git": "git@github.com:shorebirdtech/dart-sdk.git",
-  "updater_git": "https://github.com/shorebirdtech/updater.git",
-  "updater_rev": "ca91f4b313e5ff1ddb0471af0442ed2bad983bfe",
+  "dart_sdk_revision": "135a9e3004102876ac6c5ef856e1742980aa1dc1",
+  "dart_sdk_git": "https://github.com/mml555/dart-sdk-shorebird-lineage.git",
+  "updater_git": "https://github.com/mml555/shorebird-updater-mirror.git",
+  "updater_rev": "87c198d30f875a3da317d70935e1025dc13064dd",
 
   # Do not download the Emscripten SDK by default.
   # This prevents us from downloading the Emscripten toolchain for builds
