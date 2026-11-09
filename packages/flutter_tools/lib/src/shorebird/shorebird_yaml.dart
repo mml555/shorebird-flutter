@@ -64,6 +64,11 @@ Map<String, dynamic> compileShorebirdYaml(
   copyIfSet('base_url');
   copyIfSet('auto_update');
   copyIfSet('patch_verification');
+  // The default update track for automatic updates. The native updater has
+  // always read `channel:` from the bundled shorebird.yaml (defaulting to
+  // stable), but this compile step dropped it, so the key could never reach the
+  // device even once shorebird_cli's parser accepted it.
+  copyIfSet('channel');
   if (publicKey != null) {
     compiled['patch_public_key'] = publicKey;
   }
