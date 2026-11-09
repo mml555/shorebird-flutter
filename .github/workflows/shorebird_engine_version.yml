@@ -71,7 +71,18 @@ jobs:
               missing=1
             fi
           done
-          if [ "$missing" != 0 ] && gh release view "engine-$engine" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          release=404
+          if [ "$missing" != 0 ]; then
+            # 404 means no release; any other failure is an error, not a no.
+            release="$(curl -sS -o /dev/null -w '%{http_code}' --retry 3 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/engine-$engine")"
+            if [ "$release" != 200 ] && [ "$release" != 404 ]; then
+              echo "::error file=$file::Looking up release engine-$engine returned HTTP $release."
+              exit 1
+            fi
+          fi
+          if [ "$release" = 200 ]; then
             # Self-built: the release must carry the overlay; a host without a
             # Dart SDK in it cannot run bin/flutter, so say which.
             # overlay-<hash>.txt lists overlay-<hash>.tar, so the 600 MB tar
@@ -86,7 +97,7 @@ jobs:
             listing="$(gh release download "engine-$engine" -R "$GITHUB_REPOSITORY" -p "overlay-$engine.txt" -O -)"
             sdks=0
             for zip in dart-sdk-linux-x64.zip dart-sdk-darwin-arm64.zip; do
-              if grep -q "flutter_infra_release/flutter/$engine/$zip\$" <<< "$listing"; then
+              if grep -qxF "./flutter_infra_release/flutter/$engine/$zip" <<< "$listing"; then
                 echo "self-built engine $engine: $zip in release engine-$engine"
                 sdks=$((sdks + 1))
               else

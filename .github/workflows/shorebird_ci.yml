@@ -10,6 +10,11 @@ on:
     branches:
       - shorebird/dev
 
+# The selfhost-engine-mirror step runs mml555/shorebird's scripts, some under
+# sudo; they need nothing beyond reading this repository and its releases.
+permissions:
+  contents: read
+
 jobs:
   # NOTE: Windows is not included because shorebird_tests depends on
   # flutter_flavorizr which requires Xcode. Additionally, flutter_tools
