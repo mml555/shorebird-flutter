@@ -5,13 +5,15 @@ description: >-
   as this repository's GitHub release engine-<hash> rather than on
   download.shorebird.dev, start the self-host CDN mirror on this runner from
   that release and point bin/flutter at it. Does nothing for any other engine.
+  Linux runners run the mirror under Docker; macOS runners, which have none,
+  run it as plain processes (selfhost/cdn/run_native.sh).
 
 inputs:
   selfhost-ref:
     description: >-
       mml555/shorebird commit whose selfhost/cdn runs the mirror. Pinned so a
       change on that repo's main cannot change this repo's CI unseen.
-    default: 84d1ae1ce8a0f266d92397f7ec658a64e831f9c2
+    default: 8b00530af3645e5b2381854ab83377c8f00ed371
 
 runs:
   using: composite
@@ -39,11 +41,30 @@ runs:
             exit 1
             ;;
         esac
-        if [ "$RUNNER_OS" != Linux ]; then
-          echo "::error file=bin/internal/engine.version::Engine $engine is self-built and its release carries Linux and Android host artifacts only. This $RUNNER_OS job needs that engine built for $RUNNER_OS too (its Dart SDK must come from the same build)."
+        # bin/flutter needs a Dart SDK from the same engine build, so a host
+        # the release has no SDK for cannot use it at all. Say so here rather
+        # than as a 404 deep inside the first flutter command.
+        case "$RUNNER_OS/$RUNNER_ARCH" in
+          Linux/X64) sdk=dart-sdk-linux-x64.zip ;;
+          Linux/ARM64) sdk=dart-sdk-linux-arm64.zip ;;
+          macOS/ARM64) sdk=dart-sdk-darwin-arm64.zip ;;
+          macOS/X64) sdk=dart-sdk-darwin-x64.zip ;;
+          *) sdk="" ;;
+        esac
+        listing="$(gh release download "engine-$engine" -R "$GITHUB_REPOSITORY" -p "overlay-$engine.txt" -O -)"
+        if [ -z "$sdk" ] || ! grep -qxF "./flutter_infra_release/flutter/$engine/$sdk" <<< "$listing"; then
+          echo "::error file=bin/internal/engine.version::Engine $engine is self-built and release engine-$engine has no ${sdk:-Dart SDK for $RUNNER_OS/$RUNNER_ARCH}. This job needs the engine built for its host: the Dart SDK must come from the same build."
           exit 1
         fi
         echo "engine=$engine" >> "$GITHUB_OUTPUT"
+
+    # run_native.sh builds Caddy with xcaddy.
+    - name: 🐹 Setup Go
+      if: steps.find.outputs.engine != '' && runner.os != 'Linux'
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: stable
+        cache: false
 
     - name: 🪞 Start the mirror from the release
       if: steps.find.outputs.engine != ''
@@ -64,7 +85,7 @@ runs:
         cdn="$src/selfhost/cdn"
 
         gh release download "engine-$ENGINE" -R "$GITHUB_REPOSITORY" -D "$rel"
-        (cd "$rel" && sha256sum -c SHA256SUMS)
+        (cd "$rel" && shasum -a 256 -c SHA256SUMS)
         tar -xf "$rel/overlay-$ENGINE.tar" -C "$cdn/overlay"
         cat "$rel/experimental_hashes-$ENGINE.map" >> "$cdn/experimental_hashes.map"
 
@@ -76,7 +97,11 @@ runs:
         # runs on.
         "$cdn/tls/generate.sh" localhost
         sudo env "JAVA_HOME=${JAVA_HOME:-}" "$cdn/tls/trust.sh"
-        docker compose -f "$cdn/docker-compose.cdn.yaml" -f "$cdn/docker-compose.cdn.tlslocal.yaml" up -d --build
+        if [ "$RUNNER_OS" = Linux ]; then
+          docker compose -f "$cdn/docker-compose.cdn.yaml" -f "$cdn/docker-compose.cdn.tlslocal.yaml" up -d --build
+        else
+          "$cdn/run_native.sh" start --tls --state "$RUNNER_TEMP/cdn-native"
+        fi
 
         stamp="https://localhost:8443/flutter_infra_release/flutter/$ENGINE/engine_stamp.json"
         curl -fsS --retry 30 --retry-all-errors --retry-delay 2 "$stamp"
