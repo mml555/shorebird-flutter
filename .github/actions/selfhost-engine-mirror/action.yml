@@ -23,10 +23,22 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: |
         engine="$(< bin/internal/engine.version)"
-        if ! gh release view "engine-$engine" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-          echo "Engine $engine has no engine-$engine release here, so it comes from download.shorebird.dev."
-          exit 0
-        fi
+        # 404 means no release; any other failure must not pass for one, or
+        # CI would quietly fall back to download.shorebird.dev.
+        status="$(curl -sS -o /dev/null -w '%{http_code}' --retry 3 \
+          -H "Authorization: Bearer $GH_TOKEN" \
+          "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/engine-$engine")"
+        case "$status" in
+          200) ;;
+          404)
+            echo "Engine $engine has no engine-$engine release here, so it comes from download.shorebird.dev."
+            exit 0
+            ;;
+          *)
+            echo "::error::Looking up release engine-$engine returned HTTP $status."
+            exit 1
+            ;;
+        esac
         if [ "$RUNNER_OS" != Linux ]; then
           echo "::error file=bin/internal/engine.version::Engine $engine is self-built and its release carries Linux and Android host artifacts only. This $RUNNER_OS job needs that engine built for $RUNNER_OS too (its Dart SDK must come from the same build)."
           exit 1
@@ -57,16 +69,13 @@ runs:
         cat "$rel/experimental_hashes-$ENGINE.map" >> "$cdn/experimental_hashes.map"
 
         # Gradle refuses a plain-http Maven repository, so serve https with a
-        # throwaway CA trusted by this runner's JDK and OS store.
+        # throwaway CA trusted by this runner's JDK and OS store. As root: the
+        # image's preinstalled JDK has a root-owned cacerts.
         "$cdn/tls/generate.sh" localhost
-        "$cdn/tls/trust.sh"
+        sudo --preserve-env=JAVA_HOME "$cdn/tls/trust.sh"
         docker compose -f "$cdn/docker-compose.cdn.yaml" -f "$cdn/docker-compose.cdn.tlslocal.yaml" up -d --build
 
         stamp="https://localhost:8443/flutter_infra_release/flutter/$ENGINE/engine_stamp.json"
         curl -fsS --retry 30 --retry-all-errors --retry-delay 2 "$stamp"
         echo
-        {
-          echo "FLUTTER_STORAGE_BASE_URL=https://localhost:8443"
-          echo "SHOREBIRD_STORAGE_BASE_URL=https://localhost:8443"
-          echo "SHOREBIRD_STORAGE_BUCKET=download.shorebird.dev"
-        } >> "$GITHUB_ENV"
+        echo "FLUTTER_STORAGE_BASE_URL=https://localhost:8443" >> "$GITHUB_ENV"
