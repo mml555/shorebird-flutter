@@ -70,9 +70,12 @@ runs:
 
         # Gradle refuses a plain-http Maven repository, so serve https with a
         # throwaway CA trusted by this runner's JDK and OS store. As root: the
-        # image's preinstalled JDK has a root-owned cacerts.
+        # image's preinstalled JDK has a root-owned cacerts. JAVA_HOME is
+        # passed by hand because sudo drops it (--preserve-env included), and
+        # without it trust.sh picks the image's JDK rather than the one Gradle
+        # runs on.
         "$cdn/tls/generate.sh" localhost
-        sudo --preserve-env=JAVA_HOME "$cdn/tls/trust.sh"
+        sudo env "JAVA_HOME=${JAVA_HOME:-}" "$cdn/tls/trust.sh"
         docker compose -f "$cdn/docker-compose.cdn.yaml" -f "$cdn/docker-compose.cdn.tlslocal.yaml" up -d --build
 
         stamp="https://localhost:8443/flutter_infra_release/flutter/$ENGINE/engine_stamp.json"
