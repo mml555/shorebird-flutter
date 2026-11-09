@@ -1,0 +1,72 @@
+# cspell:words selfhost
+name: Self-host engine mirror
+description: >-
+  When bin/internal/engine.version names a self-built engine that is published
+  as this repository's GitHub release engine-<hash> rather than on
+  download.shorebird.dev, start the self-host CDN mirror on this runner from
+  that release and point bin/flutter at it. Does nothing for any other engine.
+
+inputs:
+  selfhost-ref:
+    description: >-
+      mml555/shorebird commit whose selfhost/cdn runs the mirror. Pinned so a
+      change on that repo's main cannot change this repo's CI unseen.
+    default: 84d1ae1ce8a0f266d92397f7ec658a64e831f9c2
+
+runs:
+  using: composite
+  steps:
+    - name: 🔎 Find a self-built engine release
+      id: find
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        engine="$(< bin/internal/engine.version)"
+        if ! gh release view "engine-$engine" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          echo "Engine $engine has no engine-$engine release here, so it comes from download.shorebird.dev."
+          exit 0
+        fi
+        if [ "$RUNNER_OS" != Linux ]; then
+          echo "::error file=bin/internal/engine.version::Engine $engine is self-built and its release carries Linux and Android host artifacts only. This $RUNNER_OS job needs that engine built for $RUNNER_OS too (its Dart SDK must come from the same build)."
+          exit 1
+        fi
+        echo "engine=$engine" >> "$GITHUB_OUTPUT"
+
+    - name: 🪞 Start the mirror from the release
+      if: steps.find.outputs.engine != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        ENGINE: ${{ steps.find.outputs.engine }}
+        SELFHOST_REF: ${{ inputs.selfhost-ref }}
+      run: |
+        set -euo pipefail
+        src="$RUNNER_TEMP/selfhost"
+        rel="$RUNNER_TEMP/engine-release"
+        git init -q "$src"
+        git -C "$src" remote add origin https://github.com/mml555/shorebird.git
+        git -C "$src" sparse-checkout set selfhost/cdn packages/artifact_proxy
+        git -C "$src" fetch -q --depth 1 origin "$SELFHOST_REF"
+        git -C "$src" checkout -q FETCH_HEAD
+        cdn="$src/selfhost/cdn"
+
+        gh release download "engine-$ENGINE" -R "$GITHUB_REPOSITORY" -D "$rel"
+        (cd "$rel" && sha256sum -c SHA256SUMS)
+        tar -xf "$rel/overlay-$ENGINE.tar" -C "$cdn/overlay"
+        cat "$rel/experimental_hashes-$ENGINE.map" >> "$cdn/experimental_hashes.map"
+
+        # Gradle refuses a plain-http Maven repository, so serve https with a
+        # throwaway CA trusted by this runner's JDK and OS store.
+        "$cdn/tls/generate.sh" localhost
+        "$cdn/tls/trust.sh"
+        docker compose -f "$cdn/docker-compose.cdn.yaml" -f "$cdn/docker-compose.cdn.tlslocal.yaml" up -d --build
+
+        stamp="https://localhost:8443/flutter_infra_release/flutter/$ENGINE/engine_stamp.json"
+        curl -fsS --retry 30 --retry-all-errors --retry-delay 2 "$stamp"
+        echo
+        {
+          echo "FLUTTER_STORAGE_BASE_URL=https://localhost:8443"
+          echo "SHOREBIRD_STORAGE_BASE_URL=https://localhost:8443"
+          echo "SHOREBIRD_STORAGE_BUCKET=download.shorebird.dev"
+        } >> "$GITHUB_ENV"
