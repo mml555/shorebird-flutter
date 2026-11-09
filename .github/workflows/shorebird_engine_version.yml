@@ -11,6 +11,10 @@ name: shorebird_engine_version
 # _build_engine built: after the post-ship rebase of shorebird/dev, the
 # shipped flutter_release/<version>'s engine.version; otherwise the engine
 # built from this branch's tip.
+#
+# A self-built engine (engine-<hash> release in this repository, served to CI
+# by .github/actions/selfhost-engine-mirror) also passes, with a warning for
+# each host its release has no Dart SDK for.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -42,6 +46,8 @@ jobs:
           persist-credentials: false
 
       - name: 🔩 Check download.shorebird.dev serves the pinned engine
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           file=bin/internal/engine.version
           if [ ! -f "$file" ]; then
@@ -65,6 +71,45 @@ jobs:
               missing=1
             fi
           done
+          release=404
+          if [ "$missing" != 0 ]; then
+            # 404 means no release; any other failure is an error, not a no.
+            release="$(curl -sS -o /dev/null -w '%{http_code}' --retry 3 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/engine-$engine")"
+            if [ "$release" != 200 ] && [ "$release" != 404 ]; then
+              echo "::error file=$file::Looking up release engine-$engine returned HTTP $release."
+              exit 1
+            fi
+          fi
+          if [ "$release" = 200 ]; then
+            # Self-built: the release must carry the overlay; a host without a
+            # Dart SDK in it cannot run bin/flutter, so say which.
+            # overlay-<hash>.txt lists overlay-<hash>.tar, so the 600 MB tar
+            # is not fetched here.
+            assets="$(gh release view "engine-$engine" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')"
+            for asset in "overlay-$engine.tar" "overlay-$engine.txt" "experimental_hashes-$engine.map" SHA256SUMS; do
+              if ! grep -qx "$asset" <<< "$assets"; then
+                echo "::error file=$file::Release engine-$engine has no $asset."
+                exit 1
+              fi
+            done
+            listing="$(gh release download "engine-$engine" -R "$GITHUB_REPOSITORY" -p "overlay-$engine.txt" -O -)"
+            sdks=0
+            for zip in dart-sdk-linux-x64.zip dart-sdk-darwin-arm64.zip; do
+              if grep -qxF "./flutter_infra_release/flutter/$engine/$zip" <<< "$listing"; then
+                echo "self-built engine $engine: $zip in release engine-$engine"
+                sdks=$((sdks + 1))
+              else
+                echo "::warning file=$file::Self-built engine $engine has no $zip, so jobs on that host cannot run bin/flutter."
+              fi
+            done
+            if [ "$sdks" = 0 ]; then
+              echo "::error file=$file::Release engine-$engine has no Dart SDK for any host."
+              exit 1
+            fi
+            missing=0
+          fi
           if [ "$missing" != 0 ]; then
             echo "::error file=bin/internal/engine.version::Engine $engine has no Shorebird artifacts on download.shorebird.dev, so bin/flutter cannot download its Dart SDK. Pin an engine _build_engine built (a 'chore: bump engine to <sha>' commit); git log -p -- bin/internal/engine.version shows the previous pins."
             exit 1

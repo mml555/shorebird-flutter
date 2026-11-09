@@ -10,6 +10,11 @@ on:
     branches:
       - shorebird/dev
 
+# The selfhost-engine-mirror step runs mml555/shorebird's scripts, some under
+# sudo; they need nothing beyond reading this repository and its releases.
+permissions:
+  contents: read
+
 jobs:
   # NOTE: Windows is not included because shorebird_tests depends on
   # flutter_flavorizr which requires Xcode. Additionally, flutter_tools
@@ -33,6 +38,9 @@ jobs:
 
       - name: 🎯 Setup Dart
         uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+
+      - name: 🪞 Self-host engine mirror
+        uses: ./.github/actions/selfhost-engine-mirror
 
       - name: 🐦 Run Flutter Tools Tests
         run: ../../bin/flutter test test/general.shard
@@ -67,6 +75,9 @@ jobs:
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
+
+      - name: 🪞 Self-host engine mirror
+        uses: ./.github/actions/selfhost-engine-mirror
 
       - name: 🤖 Run Android Tests
         run: dart test test/base_test.dart test/android_test.dart
@@ -105,6 +116,9 @@ jobs:
             ${{ runner.os }}-gradle-
 
       # base_test.dart runs in shorebird-android-tests.
+      - name: 🪞 Self-host engine mirror
+        uses: ./.github/actions/selfhost-engine-mirror
+
       - name: 🍎 Run iOS Tests
         run: dart test test/ios_test.dart
         working-directory: packages/shorebird_tests
@@ -139,6 +153,9 @@ jobs:
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
+
+      - name: 🪞 Self-host engine mirror
+        uses: ./.github/actions/selfhost-engine-mirror
 
       - name: 🤖 Run Android Smoke Test (macOS)
         run: dart test test/android_test.dart --name "can build an apk"
