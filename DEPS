@@ -17,7 +17,7 @@ vars = {
   'llvm_git': 'https://llvm.googlesource.com',
   'dart_ai_rev': '9c96bfe5f091c9451eff5b59c9bffeb2e806b875',
   'skia_revision': '8df24be66531469e576a806749a0202ae26b8d08',
-  "dart_sdk_revision": "2be71644388fd085d5af9f26de513e4b0ba5d931",
+  "dart_sdk_revision": "d2df9606d11f9260bcf5a2118245c322cc2baf8b",
   "dart_sdk_git": "https://github.com/mml555/dart-sdk-shorebird-lineage.git",
   "updater_git": "https://github.com/mml555/shorebird-updater-mirror.git",
   "updater_rev": "87c198d30f875a3da317d70935e1025dc13064dd",
