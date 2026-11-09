@@ -84,7 +84,13 @@ vars = {
   'ocmock_rev': 'c4ec0e3a7a9f56cfdbd0aa01f4f97bb4b75c5ef8', # v3.7.1
 
   # Download a prebuilt Dart SDK by default
-  'download_dart_sdk': True,
+  # SELFHOST: off. The prebuilts below live in shorebird-dart-sdk-prebuilt,
+  # which is private and keyed by dart_sdk_revision; nothing has been uploaded
+  # there for mml555/dart-sdk-shorebird-lineage revisions, so a sync would 403
+  # or fetch the wrong SDK. Dart builds from source (selfhost/engine/build.sh
+  # passes --no-prebuilt-dart-sdk when no prebuilt is present). The pins below
+  # are left as upstream's shape so a later re-pin is a one-place change.
+  'download_dart_sdk': False,
 
   # Download a prebuilt esbuild by default
   'download_esbuild': True,

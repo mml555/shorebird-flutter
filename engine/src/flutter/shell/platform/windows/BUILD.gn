@@ -213,13 +213,7 @@ copy("updater_exports_windows") {
 }
 
 shared_library("flutter_windows") {
-  # The toolchain links with /DEF:<root_out_dir>/flutter_windows.dll.def and
-  # silently drops the flag if that file is missing, so the copy must run
-  # before the link or the DLL ships without the shorebird_* exports.
-  deps = [
-    ":flutter_windows_source",
-    ":updater_exports_windows",
-  ]
+  deps = [ ":flutter_windows_source" ]
 
   # The toolchain links with /DEF:<root_out_dir>/flutter_windows.dll.def and
   # silently drops the flag if that file is missing, so the copy must run
