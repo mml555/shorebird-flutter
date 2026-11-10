@@ -1255,21 +1255,53 @@ final class HeaderFormatChecker extends FormatChecker {
   }
 }
 
-Future<String> _getDiffBaseRevision(ProcessManager processManager, Directory repoDir) async {
+/// The remotes, in order, whose branch the diff is based on. git_repo_tools
+/// (`GitRepo`) tries the same remotes and branches in the same order.
+const List<String> _baseRemotes = <String>['upstream', 'origin'];
+
+/// The branches tried on each remote, in order: `main`, as in flutter/flutter,
+/// then `shorebird/dev`, the default branch of the Shorebird fork, which has
+/// no `main`.
+const List<String> _baseBranches = <String>['main', 'shorebird/dev'];
+
+/// Returns the merge-base of HEAD and the base branch of the first remote that
+/// has one (see [_baseRemotes] and [_baseBranches]).
+///
+/// Throws a [ProcessRunnerException] naming everything tried if none can be
+/// fetched; there is no fallback to a local ref, so a failed fetch does not
+/// quietly narrow the files checked.
+@visibleForTesting
+Future<String> getDiffBaseRevision(ProcessManager processManager, Directory repoDir) async {
   final processRunner = ProcessRunner(
     defaultWorkingDirectory: repoDir,
     processManager: processManager,
   );
-  var upstream = 'upstream';
-  final String upstreamUrl = await _runGit(
-    <String>['remote', 'get-url', upstream],
-    processRunner,
-    failOk: true,
-  );
-  if (upstreamUrl.isEmpty) {
-    upstream = 'origin';
+  final tried = <String>[];
+  var fetched = false;
+  for (final remote in _baseRemotes) {
+    for (final branch in _baseBranches) {
+      final ProcessRunnerResult fetch = await processRunner.runProcess(<String>[
+        'git',
+        'fetch',
+        remote,
+        branch,
+      ], failOk: true);
+      if (fetch.exitCode == 0) {
+        fetched = true;
+        break;
+      }
+      tried.add('$remote $branch');
+    }
+    if (fetched) {
+      break;
+    }
   }
-  await _runGit(<String>['fetch', upstream, 'main'], processRunner);
+  if (!fetched) {
+    throw ProcessRunnerException(
+      'Could not fetch a base branch to diff against. Tried git fetch for: '
+      '${tried.join(', ')}.',
+    );
+  }
   var result = '';
   try {
     // This is the preferred command to use, but developer checkouts often do
@@ -1382,7 +1414,7 @@ Future<int> main(List<String> arguments) async {
   }
 
   const ProcessManager processManager = LocalProcessManager();
-  final String baseGitRef = await _getDiffBaseRevision(processManager, repoDir);
+  final String baseGitRef = await getDiffBaseRevision(processManager, repoDir);
 
   var result = true;
   final checks = options['check'] as List<String>;

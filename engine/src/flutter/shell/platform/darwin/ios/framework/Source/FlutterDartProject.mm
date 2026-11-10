@@ -211,6 +211,11 @@ flutter::Settings FLTDefaultSettingsForBundle(NSBundle* bundle, NSProcessInfo* p
   // shorebird_use_interpreter in common/config.gni) cannot run a patch, so
   // don't start the updater: it would download patches only for them to be
   // discarded. The app runs as it does with no shorebird.yaml.
+  //
+  // Load-bearing text: the Shorebird CLI (isRouteBEngine in
+  // packages/shorebird_cli/lib/src/route_b.dart) searches the iOS release
+  // binary for "engine cannot run iOS patches" to learn that this engine can't
+  // take patches. Keep that phrase if you reword this line.
   NSLog(@"This engine cannot run iOS patches, not starting the Shorebird updater.");
 #else
   // FIXME: This may not be the correct path (e.g., should it include the organization id?)
