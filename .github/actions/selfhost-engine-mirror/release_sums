@@ -1,7 +1,8 @@
 # <engine> <sha256 of SHA256SUMS in release engine-<engine>> [<sha256 of SHA256SUMS.extra>]
 # The optional third field pins SHA256SUMS.extra, which checksums the release's
 # overlay-extra-<engine>.tar and .txt. A line without it installs no extra
-# files, exactly as before.
+# files, exactly as before. Dropping the third field from a line therefore
+# silently stops installing that release's extra files; nothing fails.
 # A release's files can be replaced in place, and SHA256SUMS comes from the
 # same release, so the action pins SHA256SUMS itself here. Republishing a
 # release means updating its line in a reviewed PR.
