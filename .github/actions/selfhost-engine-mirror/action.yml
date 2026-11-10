@@ -1,4 +1,4 @@
-# cspell:words selfhost
+# cspell:words selfhost xcaddy buildenv
 name: Self-host engine mirror
 description: >-
   When bin/internal/engine.version names a self-built engine that is published
@@ -47,6 +47,9 @@ runs:
         # The release's files can be replaced in place; check them against the
         # SHA256SUMS digest this repository pins (release_sums).
         want="$(awk -v e="$engine" '$1 == e { print $2 }' "$PINS")"
+        # Optional third field: the digest of SHA256SUMS.extra (the release's
+        # overlay-extra tar). Without it, the extra files are not installed.
+        want_extra="$(awk -v e="$engine" '$1 == e { print $3 }' "$PINS")"
         if [ -z "$want" ]; then
           echo "::error file=.github/actions/selfhost-engine-mirror/release_sums::No pinned SHA256SUMS digest for engine $engine. Add its line in the PR that publishes the release."
           exit 1
@@ -89,13 +92,68 @@ runs:
           fi
         done
         echo "engine=$engine" >> "$GITHUB_OUTPUT"
+        echo "extra-sums=$want_extra" >> "$GITHUB_OUTPUT"
 
-    # run_native.sh builds Caddy with xcaddy.
-    - name: 🐹 Setup Go
+    # run_native.sh builds Caddy with xcaddy (~75 s). It reuses
+    # <state>/bin/caddy when <state>/bin/caddy.stamp names the Caddy,
+    # cache-handler and nuts versions it pins, so cache those two files. Those
+    # versions are pinned in run_native.sh, which selfhost-ref pins in turn, so
+    # the key carries selfhost-ref (a commit sha, checked below) instead of
+    # repeating the versions here (a copy would drift).
+    - name: 🔧 Check the Caddy build inputs
+      id: caddy-in
       if: steps.find.outputs.engine != '' && runner.os != 'Linux'
+      shell: bash
+      env:
+        SELFHOST_REF: ${{ inputs.selfhost-ref }}
+      run: |
+        set -euo pipefail
+        # A branch or tag would keep one key while the script and its pins move.
+        if ! [[ "$SELFHOST_REF" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::selfhost-ref must be a full 40-hex commit sha, not '$SELFHOST_REF'; the Caddy cache is keyed on it."
+          exit 1
+        fi
+        # The one place the Go version is named: setup-go and the cache key
+        # both read it. Caddy v2.11 needs Go 1.26 (its go.mod), so move it
+        # with the Caddy pin in run_native.sh.
+        echo "go=1.26" >> "$GITHUB_OUTPUT"
+
+    - name: 🗄️ Restore the cached Caddy
+      id: caddy-cache
+      if: steps.find.outputs.engine != '' && runner.os != 'Linux'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ${{ runner.temp }}/cdn-native/bin/caddy
+          ${{ runner.temp }}/cdn-native/bin/caddy.stamp
+        key: selfhost-caddy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.caddy-in.outputs.go }}-${{ inputs.selfhost-ref }}
+
+    # A hit is only used if the binary runs and has the module run_native.sh
+    # requires. Otherwise drop it and build, which needs Go. Cache entries are
+    # immutable, so a bad one stays: the next run repeats this and rebuilds
+    # until it is purged (gh cache delete <key> -R $GITHUB_REPOSITORY).
+    - name: 🔬 Check the cached Caddy
+      id: caddy-check
+      if: steps.find.outputs.engine != '' && runner.os != 'Linux'
+      shell: bash
+      env:
+        HIT: ${{ steps.caddy-cache.outputs.cache-hit }}
+      run: |
+        bin="$RUNNER_TEMP/cdn-native/bin"
+        if [ "$HIT" = true ] && [ -x "$bin/caddy" ] && [ -f "$bin/caddy.stamp" ] \
+            && "$bin/caddy" list-modules 2>/dev/null | grep -qx 'http.handlers.cache'; then
+          echo "reuse=true" >> "$GITHUB_OUTPUT"
+        else
+          [ "$HIT" = true ] && echo "::warning::The cached Caddy is unusable; rebuilding it. Purge the entry with: gh cache delete selfhost-caddy-... -R $GITHUB_REPOSITORY"
+          rm -f "$bin/caddy" "$bin/caddy.stamp"
+          echo "reuse=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: 🐹 Setup Go
+      if: steps.find.outputs.engine != '' && runner.os != 'Linux' && steps.caddy-check.outputs.reuse != 'true'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: stable
+        go-version: ${{ steps.caddy-in.outputs.go }}
         cache: false
 
     - name: 🪞 Start the mirror from the release
@@ -105,6 +163,10 @@ runs:
         GH_TOKEN: ${{ github.token }}
         ENGINE: ${{ steps.find.outputs.engine }}
         SELFHOST_REF: ${{ inputs.selfhost-ref }}
+        EXTRA_SUMS: ${{ steps.find.outputs.extra-sums }}
+        ACTION_PATH: ${{ github.action_path }}
+        # A caller's CADDY would be copied in with no stamp, then cached.
+        CADDY: ''
       run: |
         set -euo pipefail
         src="$RUNNER_TEMP/selfhost"
@@ -120,9 +182,15 @@ runs:
         gh release download "engine-$ENGINE" -R "$GITHUB_REPOSITORY" -D "$rel" --clobber \
           -p "overlay-$ENGINE.tar" -p "experimental_hashes-$ENGINE.map" -p "engine_stamp-$ENGINE.json"
         (cd "$rel" && shasum -a 256 -c SHA256SUMS)
+        tar -xf "$rel/overlay-$ENGINE.tar" -C "$cdn/overlay"
+        # Newer releases also carry overlay-extra-<engine>.tar (sky_engine.zip
+        # and the like), pinned in release_sums. It must not overwrite the
+        # main tar's files, so it goes in after them.
+        if [ -n "$EXTRA_SUMS" ]; then
+          "$ACTION_PATH/install_extra.sh" "$ENGINE" "$EXTRA_SUMS" "$rel" "$cdn/overlay"
+        fi
         # The mirror's processes outlive this step; keep the token out of them.
         unset GH_TOKEN
-        tar -xf "$rel/overlay-$ENGINE.tar" -C "$cdn/overlay"
         cat "$rel/experimental_hashes-$ENGINE.map" >> "$cdn/experimental_hashes.map"
 
         # Gradle refuses a plain-http Maven repository, so serve https with a
@@ -136,7 +204,12 @@ runs:
         if [ "$RUNNER_OS" = Linux ]; then
           docker compose -f "$cdn/docker-compose.cdn.yaml" -f "$cdn/docker-compose.cdn.tlslocal.yaml" up -d --build
         else
-          "$cdn/run_native.sh" start --tls --state "$RUNNER_TEMP/cdn-native"
+          # On macOS xcaddy creates its buildenv_* directory in the working
+          # directory (newTempFolder in xcaddy v0.4.7's builder.go; elsewhere
+          # it uses the OS temp dir), and a cancelled build leaves it behind,
+          # so never run it inside the checkout.
+          mkdir -p "$RUNNER_TEMP/caddy-build"
+          (cd "$RUNNER_TEMP/caddy-build" && "$cdn/run_native.sh" start --tls --state "$RUNNER_TEMP/cdn-native")
         fi
 
         stamp="https://localhost:8443/flutter_infra_release/flutter/$ENGINE/engine_stamp.json"
