@@ -1,0 +1,5 @@
+# <engine> <sha256 of SHA256SUMS in release engine-<engine>>
+# A release's files can be replaced in place, and SHA256SUMS comes from the
+# same release, so the action pins SHA256SUMS itself here. Republishing a
+# release means updating its line in a reviewed PR.
+3a565f273d871d1ef004faf1a87bf45637df8ad0 429f262c78335f1e5007809a0e60cd00695488379837c9a063f5b81d81c50d93
