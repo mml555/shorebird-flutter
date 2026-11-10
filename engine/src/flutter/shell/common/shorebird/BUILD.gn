@@ -278,7 +278,6 @@ if (enable_unittests) {
 
     sources = [
       "engine_callbacks_unittests.cc",
-      "patch_cache_unittests.cc",
       "shorebird_unittests.cc",
       "snapshots_data_handle_unittests.cc",
       "updater_unittests.cc",
@@ -295,9 +294,15 @@ if (enable_unittests) {
       ":snapshots_data_handle",
       ":updater",
       "//flutter/runtime",
-      "//flutter/runtime/shorebird:patch_cache",
       "//flutter/testing",
       "//flutter/testing:fixture_test",
     ]
+
+    # SELFHOST: patch_cache needs Shorebird's private Dart; see
+    # shorebird_use_interpreter in common/config.gni.
+    if (shorebird_use_interpreter) {
+      sources += [ "patch_cache_unittests.cc" ]
+      deps += [ "//flutter/runtime/shorebird:patch_cache" ]
+    }
   }
 }
