@@ -270,7 +270,8 @@ bool LoadPatchOrBase(const std::string& patch_path,
   // booting once the start is reported. Both are guarded once per process,
   // so the Shell's own start report (IsolateSnapshotFromSettings) is a no-op,
   // and its success report does not record the base-code boot as the patch's.
-  // This is the same sequence TryLoadPatch runs on iOS.
+  // This is the same sequence TryLoadPatch runs on iOS with the interpreter,
+  // and ApplyPatchToSettings runs on iOS without it.
   shorebird::Updater::Instance().ReportLaunchStart();
   shorebird::Updater::Instance().ReportLaunchFailure();
   return load(base_path);
@@ -315,6 +316,18 @@ void ApplyPatchToSettings(
   // still wins the lookup without evicting the base.
   settings.application_library_paths.insert(
       settings.application_library_paths.begin(), patch_path);
+#elif FML_OS_IOS
+  // SELFHOST: an iOS engine built without the interpreter (see
+  // shorebird_use_interpreter in common/config.gni) cannot run a patch. The
+  // patch is a linked .vmcode file, not a Mach-O, so swapping it in for the
+  // app library would leave the VM with no snapshot and crash at launch.
+  // Keep the release's code and mark the patch failed, as LoadPatchOrBase
+  // does, so the updater stops booting it.
+  FML_LOG(ERROR) << "Shorebird: this engine cannot run iOS patches, running "
+                    "the release's code instead of "
+                 << patch_path;
+  shorebird::Updater::Instance().ReportLaunchStart();
+  shorebird::Updater::Instance().ReportLaunchFailure();
 #else
   // The patch replaces the release's library outright, so a patch that won't
   // load would leave the Shell nothing to boot. Decide once, here, for every
