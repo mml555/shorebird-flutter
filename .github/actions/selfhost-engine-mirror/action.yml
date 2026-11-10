@@ -53,8 +53,12 @@ runs:
         fi
         rel="$RUNNER_TEMP/engine-release"
         mkdir -p "$rel"
-        gh release download "engine-$engine" -R "$GITHUB_REPOSITORY" -D "$rel" --clobber \
-          -p SHA256SUMS -p "overlay-$engine.txt"
+        if ! gh release download "engine-$engine" -R "$GITHUB_REPOSITORY" -D "$rel" --clobber \
+            -p SHA256SUMS -p "overlay-$engine.txt" \
+            || [ ! -f "$rel/SHA256SUMS" ] || [ ! -f "$rel/overlay-$engine.txt" ]; then
+          echo "::error::Release engine-$engine must have SHA256SUMS and overlay-$engine.txt."
+          exit 1
+        fi
         got="$(shasum -a 256 "$rel/SHA256SUMS" | cut -d' ' -f1)"
         if [ "$got" != "$want" ]; then
           echo "::error::Release engine-$engine has SHA256SUMS $got; this repository pins $want."
