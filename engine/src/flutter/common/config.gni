@@ -23,16 +23,14 @@ declare_args() {
   # SELFHOST: off by default, so iOS builds link against this fork's Dart. The
   # loader (runtime/shorebird/patch_cache.cc) calls two things that exist only
   # in Shorebird's private Dart fork: Shorebird_ReadLinkHeader(), and a
-  # Dart_LoadELF() taking an 8th file-mode argument (dart::bin::kReadOnly);
-  # ours takes 7 (runtime/bin/elf_loader.h). Set it to true only when building
-  # against that private Dart.
+  # Dart_LoadELF() that takes a file mode (dart::bin::kReadOnly). This fork's
+  # Dart_LoadELF (runtime/bin/elf_loader.h) takes five arguments and has no
+  # file mode. Set it to true only when building against that private Dart.
   #
-  # With it off, iOS takes the macOS patch path: a patch replaces the app
-  # library and is loaded with Dart_LoadELF (ApplyPatchToSettings in
-  # shell/common/shorebird/shorebird.cc). iOS does not run unsigned code
-  # mapped that way, so iOS releases work and iOS patches are not expected
-  # to (untested); a patch that fails to load boots the release's own code
-  # (LoadPatchOrBase).
+  # With it off, an iOS engine cannot run a code patch at all, so it boots the
+  # release's own code and marks any downloaded patch as failed
+  # (ApplyPatchToSettings in shell/common/shorebird/shorebird.cc). iOS
+  # releases work; iOS patches do not.
   shorebird_use_interpreter = false
 
   # Whether to build host-side development artifacts.
