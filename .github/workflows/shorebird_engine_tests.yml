@@ -43,6 +43,11 @@ jobs:
     # Namespace runners at all, so there the job would queue forever: it runs
     # only in shorebirdtech, or where the repo variable NSCLOUD_RUNNERS is
     # 'true'.
+    # NSCLOUD GATE: every job on an nscloud-* (Namespace) runner needs the
+    # (repository_owner || vars.NSCLOUD_RUNNERS) term below, or it queues
+    # forever in a repo without those runners. Keep the owner term: Namespace
+    # runners belong to the shorebirdtech org, so the owner is what says they
+    # exist. See docs/infra/GitHub-Action-Workflows.md.
     if: >-
       (github.repository_owner == 'shorebirdtech' || vars.NSCLOUD_RUNNERS == 'true') &&
       (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)

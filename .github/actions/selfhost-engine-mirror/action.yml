@@ -1,4 +1,4 @@
-# cspell:words selfhost
+# cspell:words selfhost xcaddy buildenv
 name: Self-host engine mirror
 description: >-
   When bin/internal/engine.version names a self-built engine that is published
@@ -90,12 +90,30 @@ runs:
         done
         echo "engine=$engine" >> "$GITHUB_OUTPUT"
 
-    # run_native.sh builds Caddy with xcaddy.
-    - name: 🐹 Setup Go
+    # run_native.sh builds Caddy with xcaddy (~75 s). It reuses
+    # <state>/bin/caddy when <state>/bin/caddy.stamp names the Caddy,
+    # cache-handler and nuts versions it pins, so cache those two files. The
+    # versions are pinned in run_native.sh, which selfhost-ref pins in turn, so
+    # the key carries selfhost-ref instead of repeating the versions here (a
+    # copy would drift). Go is in the key too: it is part of the binary.
+    - name: 🗄️ Restore the cached Caddy
+      id: caddy-cache
       if: steps.find.outputs.engine != '' && runner.os != 'Linux'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ${{ runner.temp }}/cdn-native/bin/caddy
+          ${{ runner.temp }}/cdn-native/bin/caddy.stamp
+        key: selfhost-caddy-${{ runner.os }}-${{ runner.arch }}-go1.26-${{ inputs.selfhost-ref }}
+
+    # Only a cache miss builds Caddy. Pinned to a minor: Caddy v2.11 needs Go
+    # 1.26 (its go.mod), so this moves only with the Caddy pin in run_native.sh.
+    # Bump the "go1.26" in the cache key above with it.
+    - name: 🐹 Setup Go
+      if: steps.find.outputs.engine != '' && runner.os != 'Linux' && steps.caddy-cache.outputs.cache-hit != 'true'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: stable
+        go-version: '1.26'
         cache: false
 
     - name: 🪞 Start the mirror from the release
@@ -136,7 +154,10 @@ runs:
         if [ "$RUNNER_OS" = Linux ]; then
           docker compose -f "$cdn/docker-compose.cdn.yaml" -f "$cdn/docker-compose.cdn.tlslocal.yaml" up -d --build
         else
-          "$cdn/run_native.sh" start --tls --state "$RUNNER_TEMP/cdn-native"
+          # xcaddy leaves buildenv_* in its working directory, and a cancelled
+          # build leaves it behind, so never run it inside the checkout.
+          mkdir -p "$RUNNER_TEMP/caddy-build"
+          (cd "$RUNNER_TEMP/caddy-build" && "$cdn/run_native.sh" start --tls --state "$RUNNER_TEMP/cdn-native")
         fi
 
         stamp="https://localhost:8443/flutter_infra_release/flutter/$ENGINE/engine_stamp.json"
