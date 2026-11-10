@@ -3,3 +3,4 @@
 # same release, so the action pins SHA256SUMS itself here. Republishing a
 # release means updating its line in a reviewed PR.
 3a565f273d871d1ef004faf1a87bf45637df8ad0 429f262c78335f1e5007809a0e60cd00695488379837c9a063f5b81d81c50d93
+255fd85017b5407260e91fc70d960ec13f1b69a8 3296a59b41206a024f507731548b9188efc6906b50b68bd0440f62b5ac8dae0b
