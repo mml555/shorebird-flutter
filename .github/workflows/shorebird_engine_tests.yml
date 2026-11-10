@@ -39,8 +39,13 @@ jobs:
   shorebird-unittests:
     name: 🧪 Shorebird Engine Unit Tests
     # Fork PRs get no secrets (the sync needs the dart-sdk deploy key) and
-    # must not run on our Namespace runners.
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    # must not run on our Namespace runners. A fork of this repo has no
+    # Namespace runners at all, so there the job would queue forever: it runs
+    # only in shorebirdtech, or where the repo variable NSCLOUD_RUNNERS is
+    # 'true'.
+    if: >-
+      (github.repository_owner == 'shorebirdtech' || vars.NSCLOUD_RUNNERS == 'true') &&
+      (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on:
       - nscloud-ubuntu-22.04-amd64-16x64-with-cache
       - nscloud-cache-tag-shorebird-engine-tests
