@@ -131,7 +131,26 @@ final class GitRepo {
         logSink.writeln('git fetch upstream main failed, using origin main');
         logSink.writeln('Output:\n${fetchResult.stdout}');
       }
-      await processRunner.runProcess(<String>['git', 'fetch', 'origin', 'main']);
+      // The Shorebird fork of Flutter has no `main`; its default branch is
+      // `shorebird/dev`. Where `main` exists this is unchanged.
+      final ProcessRunnerResult originMain = await processRunner.runProcess(<String>[
+        'git',
+        'fetch',
+        'origin',
+        'main',
+      ], failOk: true);
+      if (originMain.exitCode != 0) {
+        final ProcessRunnerResult originDev = await processRunner.runProcess(<String>[
+          'git',
+          'fetch',
+          'origin',
+          'shorebird/dev',
+        ], failOk: true);
+        if (originDev.exitCode != 0) {
+          // Neither exists: fail as before, with the `main` error.
+          await processRunner.runProcess(<String>['git', 'fetch', 'origin', 'main']);
+        }
+      }
     }
   }
 
