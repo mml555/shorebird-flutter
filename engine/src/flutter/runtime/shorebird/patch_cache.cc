@@ -5,10 +5,10 @@
 #include "flutter/runtime/shorebird/patch_cache.h"
 
 #include <mutex>
-#include <utility>
 
 #include "flutter/fml/logging.h"
 #include "flutter/fml/mapping.h"
+#include "flutter/runtime/shorebird/patch_mapping.h"
 #include "flutter/shell/common/shorebird/updater.h"
 #include "third_party/dart/runtime/include/dart_api.h"
 
@@ -26,21 +26,8 @@ std::shared_ptr<PatchCacheEntry> PatchCacheEntry::Create(
     return nullptr;
   }
 
-  // The offset is the link header's size rounded up to a page. The header
-  // itself is copied out here and handed to the VM per isolate group, so the
-  // file mapping can be dropped once the ELF is loaded.
-  int elf_file_offset = Shorebird_LinkHeaderOffset(
-      elf_mapping->GetMapping(), static_cast<intptr_t>(elf_mapping->GetSize()));
-  if (elf_file_offset < 0 ||
-      static_cast<size_t>(elf_file_offset) >= elf_mapping->GetSize()) {
-    FML_LOG(ERROR) << "Invalid link header offset in patch at " << path;
-    return nullptr;
-  }
-  std::shared_ptr<const fml::Mapping> link_header;
-  if (elf_file_offset > 0) {
-    link_header = std::make_shared<fml::MallocMapping>(fml::MallocMapping::Copy(
-        elf_mapping->GetMapping(), static_cast<size_t>(elf_file_offset)));
-  }
+  int elf_file_offset = Shorebird_ReadLinkHeader(elf_mapping->GetMapping(),
+                                                 elf_mapping->GetSize());
 
   const char* error = nullptr;
   // One data blob and one text blob. The VM isolate folded into the isolate
@@ -54,28 +41,24 @@ std::shared_ptr<PatchCacheEntry> PatchCacheEntry::Create(
                    &isolate_instrs, dart::bin::kReadOnly);
 
   if (elf == nullptr) {
-    FML_LOG(ERROR) << "Failed to load patch at " << path
-                   << " error: " << (error != nullptr ? error : "unknown");
+    FML_LOG(ERROR) << "Failed to load patch at " << path << " error: " << error;
     return nullptr;
   }
 
   FML_LOG(INFO) << "Loaded patch from " << path;
 
-  return std::shared_ptr<PatchCacheEntry>(new PatchCacheEntry(
-      path, elf, isolate_data, isolate_instrs, std::move(link_header)));
+  return std::shared_ptr<PatchCacheEntry>(
+      new PatchCacheEntry(path, elf, isolate_data, isolate_instrs));
 }
 
-PatchCacheEntry::PatchCacheEntry(
-    const std::string& path,
-    Dart_LoadedElf* elf,
-    const uint8_t* isolate_data,
-    const uint8_t* isolate_instrs,
-    std::shared_ptr<const fml::Mapping> link_header)
+PatchCacheEntry::PatchCacheEntry(const std::string& path,
+                                 Dart_LoadedElf* elf,
+                                 const uint8_t* isolate_data,
+                                 const uint8_t* isolate_instrs)
     : path_(path),
       elf_(elf),
       isolate_data_(isolate_data),
-      isolate_instrs_(isolate_instrs),
-      link_header_(std::move(link_header)) {}
+      isolate_instrs_(isolate_instrs) {}
 
 PatchCacheEntry::~PatchCacheEntry() {
   if (elf_ != nullptr) {
@@ -126,8 +109,9 @@ void PatchCache::PruneExpired() {
   }
 }
 
-std::shared_ptr<PatchCacheEntry> TryLoadPatch(
-    const std::vector<std::string>& native_library_paths) {
+std::shared_ptr<const fml::Mapping> TryLoadFromPatch(
+    const std::vector<std::string>& native_library_paths,
+    PatchSymbol symbol) {
   if (native_library_paths.empty()) {
     return nullptr;
   }
@@ -150,12 +134,17 @@ std::shared_ptr<PatchCacheEntry> TryLoadPatch(
     // ReportLaunchStart already promoted this patch to current_boot, so
     // without a failure report it stays "running" in the updater's books
     // while base code executes, and the next launch retries the same patch.
-    // Guarded once per process.
+    // Guarded once per process, so the second symbol lookup is a no-op.
     shorebird::Updater::Instance().ReportLaunchFailure();
     return nullptr;
   }
 
-  return cache_entry;
+  if (symbol == PatchSymbol::kIsolateData) {
+    FML_LOG(INFO) << "Loading isolate data from patch";
+    return PatchMapping::CreateIsolateData(cache_entry);
+  }
+  FML_LOG(INFO) << "Loading isolate instructions from patch";
+  return PatchMapping::CreateIsolateInstructions(cache_entry);
 }
 
 }  // namespace flutter
