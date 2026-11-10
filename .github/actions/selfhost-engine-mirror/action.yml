@@ -47,6 +47,9 @@ runs:
         # The release's files can be replaced in place; check them against the
         # SHA256SUMS digest this repository pins (release_sums).
         want="$(awk -v e="$engine" '$1 == e { print $2 }' "$PINS")"
+        # Optional third field: the digest of SHA256SUMS.extra (the release's
+        # overlay-extra tar). Without it, the extra files are not installed.
+        want_extra="$(awk -v e="$engine" '$1 == e { print $3 }' "$PINS")"
         if [ -z "$want" ]; then
           echo "::error file=.github/actions/selfhost-engine-mirror/release_sums::No pinned SHA256SUMS digest for engine $engine. Add its line in the PR that publishes the release."
           exit 1
@@ -89,6 +92,7 @@ runs:
           fi
         done
         echo "engine=$engine" >> "$GITHUB_OUTPUT"
+        echo "extra-sums=$want_extra" >> "$GITHUB_OUTPUT"
 
     # run_native.sh builds Caddy with xcaddy (~75 s). It reuses
     # <state>/bin/caddy when <state>/bin/caddy.stamp names the Caddy,
@@ -159,6 +163,8 @@ runs:
         GH_TOKEN: ${{ github.token }}
         ENGINE: ${{ steps.find.outputs.engine }}
         SELFHOST_REF: ${{ inputs.selfhost-ref }}
+        EXTRA_SUMS: ${{ steps.find.outputs.extra-sums }}
+        ACTION_PATH: ${{ github.action_path }}
         # A caller's CADDY would be copied in with no stamp, then cached.
         CADDY: ''
       run: |
@@ -176,9 +182,15 @@ runs:
         gh release download "engine-$ENGINE" -R "$GITHUB_REPOSITORY" -D "$rel" --clobber \
           -p "overlay-$ENGINE.tar" -p "experimental_hashes-$ENGINE.map" -p "engine_stamp-$ENGINE.json"
         (cd "$rel" && shasum -a 256 -c SHA256SUMS)
+        tar -xf "$rel/overlay-$ENGINE.tar" -C "$cdn/overlay"
+        # Newer releases also carry overlay-extra-<engine>.tar (sky_engine.zip
+        # and the like), pinned in release_sums. It must not overwrite the
+        # main tar's files, so it goes in after them.
+        if [ -n "$EXTRA_SUMS" ]; then
+          "$ACTION_PATH/install_extra.sh" "$ENGINE" "$EXTRA_SUMS" "$rel" "$cdn/overlay"
+        fi
         # The mirror's processes outlive this step; keep the token out of them.
         unset GH_TOKEN
-        tar -xf "$rel/overlay-$ENGINE.tar" -C "$cdn/overlay"
         cat "$rel/experimental_hashes-$ENGINE.map" >> "$cdn/experimental_hashes.map"
 
         # Gradle refuses a plain-http Maven repository, so serve https with a
