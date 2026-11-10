@@ -27,10 +27,10 @@ declare_args() {
   # Dart_LoadELF (runtime/bin/elf_loader.h) takes five arguments and has no
   # file mode. Set it to true only when building against that private Dart.
   #
-  # With it off, an iOS engine cannot run a code patch at all, so it boots the
-  # release's own code and marks any downloaded patch as failed
-  # (ApplyPatchToSettings in shell/common/shorebird/shorebird.cc). iOS
-  # releases work; iOS patches do not.
+  # With it off, an iOS engine cannot run a code patch at all, so it does not
+  # start the updater (ConfigureShorebird in shell/common/shorebird/
+  # shorebird.cc): iOS releases work, and iOS apps neither download nor boot
+  # patches.
   shorebird_use_interpreter = false
 
   # Whether to build host-side development artifacts.
