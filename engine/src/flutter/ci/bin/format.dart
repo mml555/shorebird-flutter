@@ -1255,6 +1255,26 @@ final class HeaderFormatChecker extends FormatChecker {
   }
 }
 
+/// Fetches the branch the diff is based on from [remote] into FETCH_HEAD.
+///
+/// That is `main`, as in flutter/flutter. The Shorebird fork of Flutter has no
+/// `main`; its default branch is `shorebird/dev`, which is tried when `main`
+/// does not exist. Returns false if neither could be fetched.
+Future<bool> _fetchBaseBranch(String remote, ProcessRunner processRunner) async {
+  for (final branch in <String>['main', 'shorebird/dev']) {
+    final ProcessRunnerResult result = await processRunner.runProcess(<String>[
+      'git',
+      'fetch',
+      remote,
+      branch,
+    ], failOk: true);
+    if (result.exitCode == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 Future<String> _getDiffBaseRevision(ProcessManager processManager, Directory repoDir) async {
   final processRunner = ProcessRunner(
     defaultWorkingDirectory: repoDir,
@@ -1269,20 +1289,31 @@ Future<String> _getDiffBaseRevision(ProcessManager processManager, Directory rep
   if (upstreamUrl.isEmpty) {
     upstream = 'origin';
   }
-  await _runGit(<String>['fetch', upstream, 'main'], processRunner);
+  // The ref to diff against: FETCH_HEAD once a fetch succeeds.
+  var baseRef = 'FETCH_HEAD';
+  if (!await _fetchBaseBranch(upstream, processRunner)) {
+    // Neither `main` nor `shorebird/dev` could be fetched, e.g. offline. Use
+    // the current branch's tracking branch if it has one, and otherwise fail
+    // the way a failed `git fetch <remote> main` always has.
+    final String tracking = (await _runGit(
+      <String>['rev-parse', '--verify', '--quiet', '@{upstream}'],
+      processRunner,
+      failOk: true,
+    )).trim();
+    if (tracking.isEmpty) {
+      await _runGit(<String>['fetch', upstream, 'main'], processRunner);
+    } else {
+      baseRef = tracking;
+    }
+  }
   var result = '';
   try {
     // This is the preferred command to use, but developer checkouts often do
     // not have a clear fork point, so we fall back to just the regular
     // merge-base in that case.
-    result = await _runGit(<String>[
-      'merge-base',
-      '--fork-point',
-      'FETCH_HEAD',
-      'HEAD',
-    ], processRunner);
+    result = await _runGit(<String>['merge-base', '--fork-point', baseRef, 'HEAD'], processRunner);
   } on ProcessRunnerException {
-    result = await _runGit(<String>['merge-base', 'FETCH_HEAD', 'HEAD'], processRunner);
+    result = await _runGit(<String>['merge-base', baseRef, 'HEAD'], processRunner);
   }
   return result.trim();
 }
