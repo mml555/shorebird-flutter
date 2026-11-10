@@ -51,7 +51,7 @@ NSNumber* _Nullable FLTEnableWideGamutFromBundle(NSBundle* _Nullable bundle,
   return nsEnableWideGamut;
 }
 
-#if !FLUTTER_JIT_RUNTIME
+#if !FLUTTER_JIT_RUNTIME && SHOREBIRD_USE_INTERPRETER
 // A launch before the device's first unlock (a push, a background fetch)
 // can't read the updater's files, which iOS protects until then, so it runs
 // the base release and can't report why. Tell the updater once the files
@@ -78,7 +78,7 @@ static void ObserveShorebirdProtectedData() {
                     usingBlock:notify];
   });
 }
-#endif  // !FLUTTER_JIT_RUNTIME
+#endif  // !FLUTTER_JIT_RUNTIME && SHOREBIRD_USE_INTERPRETER
 
 flutter::Settings FLTDefaultSettingsForBundle(NSBundle* bundle, NSProcessInfo* processInfoOrNil) {
   auto command_line = flutter::CommandLineFromNSProcessInfo(processInfoOrNil);
@@ -206,6 +206,12 @@ flutter::Settings FLTDefaultSettingsForBundle(NSBundle* bundle, NSProcessInfo* p
   // skips it outside FLUTTER_RELEASE; iOS keeps it in profile.)
 #if FLUTTER_JIT_RUNTIME
   NSLog(@"Debug build, not starting the Shorebird updater.");
+#elif !SHOREBIRD_USE_INTERPRETER
+  // SELFHOST: an iOS engine built without the interpreter (see
+  // shorebird_use_interpreter in common/config.gni) cannot run a patch, so
+  // don't start the updater: it would download patches only for them to be
+  // discarded. The app runs as it does with no shorebird.yaml.
+  NSLog(@"This engine cannot run iOS patches, not starting the Shorebird updater.");
 #else
   // FIXME: This may not be the correct path (e.g., should it include the organization id?)
   // See

@@ -165,17 +165,6 @@ std::string GetValueFromYaml(const std::string& yaml, const std::string& key) {
 bool ConfigureShorebird(const ShorebirdConfigArgs& args,
                         std::string& patch_path) {
   patch_path.clear();
-
-#if FML_OS_IOS && !SHOREBIRD_USE_INTERPRETER
-  // SELFHOST: an iOS engine built without the interpreter (see
-  // shorebird_use_interpreter in common/config.gni) cannot run a patch, so
-  // don't start the updater: it would download patches only for them to be
-  // discarded. The app runs as it does with no shorebird.yaml.
-  FML_LOG(ERROR) << "Shorebird updater: this engine cannot run iOS patches, "
-                    "not starting the updater.";
-  return false;
-#endif
-
   auto shorebird_updater_dir_name = "shorebird_updater";
 
   // Parse app id from shorebird.yaml
@@ -311,9 +300,9 @@ void ApplyPatchToSettings(const std::string& patch_path, Settings& settings) {
   // shorebird_use_interpreter in common/config.gni) cannot run a patch. The
   // patch is a linked .vmcode file, not a Mach-O, so swapping it in for the
   // app library would leave the VM with no snapshot and crash at launch.
-  // ConfigureShorebird never returns a patch path here; this guards any
-  // other caller. Keep the release's code and mark the patch failed, as
-  // LoadPatchOrBase does, so the updater stops booting it.
+  // FlutterDartProject.mm doesn't start the updater in such an engine; this
+  // guards any other caller. Keep the release's code and mark the patch failed,
+  // as LoadPatchOrBase does, so the updater stops booting it.
   FML_LOG(ERROR) << "Shorebird: this engine cannot run iOS patches, running "
                     "the release's code instead of "
                  << patch_path;

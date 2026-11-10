@@ -28,9 +28,9 @@ declare_args() {
   # file mode. Set it to true only when building against that private Dart.
   #
   # With it off, an iOS engine cannot run a code patch at all, so it does not
-  # start the updater (ConfigureShorebird in shell/common/shorebird/
-  # shorebird.cc): iOS releases work, and iOS apps neither download nor boot
-  # patches.
+  # start the updater (shell/platform/darwin/ios/framework/Source/
+  # FlutterDartProject.mm): iOS releases work, and iOS apps neither download
+  # nor boot patches.
   shorebird_use_interpreter = false
 
   # Whether to build host-side development artifacts.
