@@ -1,5 +1,5 @@
-# Symbols the Rust updater's static library leaves globally visible that the
-# Flutter framework must not export on iOS and macOS. Android gets the same
+# Symbols the Rust updater's static library (and our Dart lineage, see below)
+# leaves globally visible that the Flutter framework must not export on iOS and macOS. Android gets the same
 # result from shell/platform/android/android_exports.lst.
 #
 # The Dart-facing shorebird_* C API stays exported: package:shorebird_code_push
@@ -16,6 +16,14 @@ _shorebird_report_launch_start
 _shorebird_report_launch_failure
 _shorebird_report_launch_success
 _shorebird_protected_data_available
+# Our updater mirror adds this one to the engine-facing API (Route B's atomic
+# next-boot prepare). Only the Route B engine patches call it, directly.
+_shorebird_prepare_next_boot_patch
+#
+# Not the updater: the Dart lineage marks its Route B entry point
+# visibility("default") and used, for Route B engine patches that call it
+# directly. Nothing looks it up at runtime, and Android hides it already.
+_Dart_RouteBActivatePatchTraced
 #
 # Rust mangled symbols, v0 mangling (_R...) and legacy mangling
 # (_ZN...17h<16 hex digits>E), depending on the Rust toolchain.
