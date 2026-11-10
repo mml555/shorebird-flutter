@@ -6,6 +6,7 @@ import 'dart:io' as io;
 
 import 'package:engine_repo_tools/engine_repo_tools.dart';
 import 'package:path/path.dart' as path;
+import 'package:process/process.dart';
 import 'package:test/test.dart';
 
 import '../bin/format.dart' as target;
@@ -346,5 +347,78 @@ void main() {
     } finally {
       fixture.gitRemove();
     }
+  });
+
+  group('getDiffBaseRevision', () {
+    late io.Directory tmp;
+
+    setUp(() => tmp = io.Directory.systemTemp.createTempSync('format_test.base'));
+    tearDown(() => tmp.deleteSync(recursive: true));
+
+    String git(String dir, List<String> args) {
+      final io.ProcessResult r = io.Process.runSync('git', <String>[
+        '-c',
+        'user.name=test',
+        '-c',
+        'user.email=test@example.com',
+        '-c',
+        'commit.gpgsign=false',
+        ...args,
+      ], workingDirectory: dir);
+      expect(r.exitCode, 0, reason: '${args.join(' ')}: ${r.stderr}');
+      return (r.stdout as String).trim();
+    }
+
+    /// A clone of a repo whose branches are [branches], named origin, checked
+    /// out on a branch of its own. Returns the clone and each branch's commit.
+    (io.Directory, Map<String, String>) cloneOf(List<String> branches) {
+      final String remote = path.join(tmp.path, 'remote');
+      io.Directory(remote).createSync();
+      git(remote, <String>['init', '-q', '-b', branches.first]);
+      final shas = <String, String>{};
+      for (final b in branches) {
+        if (b != branches.first) {
+          git(remote, <String>['checkout', '-q', '-b', b, branches.first]);
+        }
+        git(remote, <String>['commit', '-q', '--allow-empty', '-m', b]);
+        shas[b] = git(remote, <String>['rev-parse', 'HEAD']);
+      }
+      git(tmp.path, <String>['clone', '-q', remote, 'work']);
+      final String work = path.join(tmp.path, 'work');
+      git(work, <String>['checkout', '-q', '-b', 'feature']);
+      return (io.Directory(work), shas);
+    }
+
+    test('uses main when the remote has it', () async {
+      final (io.Directory work, Map<String, String> shas) = cloneOf(<String>[
+        'main',
+        'shorebird/dev',
+      ]);
+      expect(await target.getDiffBaseRevision(const LocalProcessManager(), work), shas['main']);
+    });
+
+    test('falls back to shorebird/dev when the remote has no main', () async {
+      final (io.Directory work, Map<String, String> shas) = cloneOf(<String>['shorebird/dev']);
+      expect(
+        await target.getDiffBaseRevision(const LocalProcessManager(), work),
+        shas['shorebird/dev'],
+      );
+    });
+
+    test('fails naming every fetch tried when there is neither', () async {
+      final (io.Directory work, _) = cloneOf(<String>['other']);
+      await expectLater(
+        target.getDiffBaseRevision(const LocalProcessManager(), work),
+        throwsA(
+          predicate(
+            (Object e) =>
+                e.toString().contains('upstream main') &&
+                e.toString().contains('upstream shorebird/dev') &&
+                e.toString().contains('origin main') &&
+                e.toString().contains('origin shorebird/dev'),
+          ),
+        ),
+      );
+    });
   });
 }

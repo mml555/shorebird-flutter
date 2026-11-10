@@ -189,6 +189,87 @@ void main() {
       fixture.gitRepo.root.deleteSync(recursive: true);
     }
   });
+
+  /// Fakes a repo where only the fetches in [succeeding] work, and records
+  /// every fetch tried, in order.
+  FakeProcessManager fetchesOnly(Set<String> succeeding, List<String> tried) {
+    return FakeProcessManager(
+      onStart: (FakeCommandLogEntry entry) {
+        final String command = entry.command.join(' ');
+        if (command.startsWith('git fetch ')) {
+          tried.add(command);
+          return FakeProcess(exitCode: succeeding.contains(command) ? 0 : 1);
+        }
+        if (command.startsWith('git merge-base --fork-point')) {
+          return FakeProcess(stdout: fakeShaHash);
+        }
+        if (command == 'git diff --name-only --diff-filter=ACMRT --relative $fakeShaHash') {
+          return FakeProcess(stdout: 'file1');
+        }
+        return FakeProcessManager.unhandledStart(entry);
+      },
+    );
+  }
+
+  test('falls back to shorebird/dev when the remote has no main', () async {
+    final tried = <String>[];
+    final fixture = Fixture(
+      processManager: fetchesOnly({'git fetch upstream shorebird/dev'}, tried),
+    );
+    try {
+      expect(await fixture.gitRepo.changedFiles, hasLength(1));
+      expect(tried, <String>['git fetch upstream main', 'git fetch upstream shorebird/dev']);
+    } finally {
+      fixture.gitRepo.root.deleteSync(recursive: true);
+    }
+  });
+
+  test('tries both branches on upstream before origin', () async {
+    final tried = <String>[];
+    final fixture = Fixture(processManager: fetchesOnly({'git fetch origin main'}, tried));
+    try {
+      expect(await fixture.gitRepo.changedFiles, hasLength(1));
+      expect(tried, <String>[
+        'git fetch upstream main',
+        'git fetch upstream shorebird/dev',
+        'git fetch origin main',
+      ]);
+    } finally {
+      fixture.gitRepo.root.deleteSync(recursive: true);
+    }
+  });
+
+  test('uses origin shorebird/dev when only that exists', () async {
+    final tried = <String>[];
+    final fixture = Fixture(processManager: fetchesOnly({'git fetch origin shorebird/dev'}, tried));
+    try {
+      expect(await fixture.gitRepo.changedFiles, hasLength(1));
+      expect(tried, hasLength(4));
+    } finally {
+      fixture.gitRepo.root.deleteSync(recursive: true);
+    }
+  });
+
+  test('fails naming every fetch tried when none works', () async {
+    final tried = <String>[];
+    final fixture = Fixture(processManager: fetchesOnly({}, tried));
+    try {
+      await expectLater(
+        fixture.gitRepo.changedFiles,
+        throwsA(
+          predicate(
+            (Object e) =>
+                e.toString().contains('upstream main') &&
+                e.toString().contains('upstream shorebird/dev') &&
+                e.toString().contains('origin main') &&
+                e.toString().contains('origin shorebird/dev'),
+          ),
+        ),
+      );
+    } finally {
+      fixture.gitRepo.root.deleteSync(recursive: true);
+    }
+  });
 }
 
 final class Fixture {
