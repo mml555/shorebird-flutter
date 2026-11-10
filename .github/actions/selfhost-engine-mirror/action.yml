@@ -23,39 +23,67 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
+        PINS: ${{ github.action_path }}/release_sums
       run: |
+        set -euo pipefail
         engine="$(< bin/internal/engine.version)"
-        # 404 means no release; any other failure must not pass for one, or
-        # CI would quietly fall back to download.shorebird.dev.
-        status="$(curl -sS -o /dev/null -w '%{http_code}' --retry 3 \
-          -H "Authorization: Bearer $GH_TOKEN" \
-          "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/engine-$engine")"
-        case "$status" in
-          200) ;;
-          404)
+        # A missing release means a stock engine; any other failure must not
+        # pass for one, or CI would quietly fall back to download.shorebird.dev.
+        if ! out="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/engine-$engine" --jq .id 2>&1)"; then
+          if grep -q 'HTTP 404' <<< "$out"; then
             echo "Engine $engine has no engine-$engine release here, so it comes from download.shorebird.dev."
             exit 0
-            ;;
-          *)
-            echo "::error::Looking up release engine-$engine returned HTTP $status."
-            exit 1
-            ;;
-        esac
-        # bin/flutter needs a Dart SDK from the same engine build, so a host
-        # the release has no SDK for cannot use it at all. Say so here rather
-        # than as a 404 deep inside the first flutter command.
-        case "$RUNNER_OS/$RUNNER_ARCH" in
-          Linux/X64) sdk=dart-sdk-linux-x64.zip ;;
-          Linux/ARM64) sdk=dart-sdk-linux-arm64.zip ;;
-          macOS/ARM64) sdk=dart-sdk-darwin-arm64.zip ;;
-          macOS/X64) sdk=dart-sdk-darwin-x64.zip ;;
-          *) sdk="" ;;
-        esac
-        listing="$(gh release download "engine-$engine" -R "$GITHUB_REPOSITORY" -p "overlay-$engine.txt" -O -)"
-        if [ -z "$sdk" ] || ! grep -qxF "./flutter_infra_release/flutter/$engine/$sdk" <<< "$listing"; then
-          echo "::error file=bin/internal/engine.version::Engine $engine is self-built and release engine-$engine has no ${sdk:-Dart SDK for $RUNNER_OS/$RUNNER_ARCH}. This job needs the engine built for its host: the Dart SDK must come from the same build."
+          fi
+          echo "::error::Looking up release engine-$engine failed: $out"
           exit 1
         fi
+        # The mirror trusts a throwaway root CA system-wide and leaves it, and
+        # its servers, running after the job. That is only acceptable on a
+        # runner that is thrown away after the job.
+        if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
+          echo "::error::Engine $engine needs the self-host mirror, which installs a root CA on the runner. Run this job on a GitHub-hosted runner."
+          exit 1
+        fi
+        # The release's files can be replaced in place; check them against the
+        # SHA256SUMS digest this repository pins (release_sums).
+        want="$(awk -v e="$engine" '$1 == e { print $2 }' "$PINS")"
+        if [ -z "$want" ]; then
+          echo "::error file=.github/actions/selfhost-engine-mirror/release_sums::No pinned SHA256SUMS digest for engine $engine. Add its line in the PR that publishes the release."
+          exit 1
+        fi
+        rel="$RUNNER_TEMP/engine-release"
+        mkdir -p "$rel"
+        gh release download "engine-$engine" -R "$GITHUB_REPOSITORY" -D "$rel" --clobber \
+          -p SHA256SUMS -p "overlay-$engine.txt"
+        got="$(shasum -a 256 "$rel/SHA256SUMS" | cut -d' ' -f1)"
+        if [ "$got" != "$want" ]; then
+          echo "::error::Release engine-$engine has SHA256SUMS $got; this repository pins $want."
+          exit 1
+        fi
+        for f in "overlay-$engine.tar" "overlay-$engine.txt" "experimental_hashes-$engine.map"; do
+          grep -qE "^[0-9a-f]{64}  $f\$" "$rel/SHA256SUMS" || { echo "::error::SHA256SUMS does not list $f."; exit 1; }
+        done
+        (cd "$rel" && grep -E "  overlay-$engine\.txt\$" SHA256SUMS | shasum -a 256 -c -)
+        # bin/flutter needs a Dart SDK and host toolchain from the same engine
+        # build, so a host the release has none for cannot use it at all. Say
+        # so here rather than as a 404 deep inside the first flutter command.
+        case "$RUNNER_OS/$RUNNER_ARCH" in
+          Linux/X64) host=linux-x64 ;;
+          Linux/ARM64) host=linux-arm64 ;;
+          macOS/ARM64) host=darwin-arm64 ;;
+          macOS/X64) host=darwin-x64 ;;
+          *) host="" ;;
+        esac
+        if [ -z "$host" ]; then
+          echo "::error::Engine $engine is self-built, and no engine build exists for $RUNNER_OS/$RUNNER_ARCH."
+          exit 1
+        fi
+        for f in "dart-sdk-$host.zip" "$host/artifacts.zip"; do
+          if ! grep -qxF "./flutter_infra_release/flutter/$engine/$f" "$rel/overlay-$engine.txt"; then
+            echo "::error file=bin/internal/engine.version::Engine $engine is self-built and release engine-$engine has no $f. This job needs the engine built for its host."
+            exit 1
+          fi
+        done
         echo "engine=$engine" >> "$GITHUB_OUTPUT"
 
     # run_native.sh builds Caddy with xcaddy.
@@ -84,8 +112,12 @@ runs:
         git -C "$src" checkout -q FETCH_HEAD
         cdn="$src/selfhost/cdn"
 
-        gh release download "engine-$ENGINE" -R "$GITHUB_REPOSITORY" -D "$rel"
+        # SHA256SUMS was checked against the pin by the find step.
+        gh release download "engine-$ENGINE" -R "$GITHUB_REPOSITORY" -D "$rel" --clobber \
+          -p "overlay-$ENGINE.tar" -p "experimental_hashes-$ENGINE.map" -p "engine_stamp-$ENGINE.json"
         (cd "$rel" && shasum -a 256 -c SHA256SUMS)
+        # The mirror's processes outlive this step; keep the token out of them.
+        unset GH_TOKEN
         tar -xf "$rel/overlay-$ENGINE.tar" -C "$cdn/overlay"
         cat "$rel/experimental_hashes-$ENGINE.map" >> "$cdn/experimental_hashes.map"
 
