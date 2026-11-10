@@ -40,7 +40,10 @@ got="$(shasum -a 256 "$work/SHA256SUMS.extra" | cut -d' ' -f1)"
 [ "$got" = "$pin" ] || fail "SHA256SUMS.extra is $got; this repository pins $pin."
 
 # It must be exactly one line for the tar and one for the txt, nothing else.
+# A third asset (such as a .sig) in SHA256SUMS.extra must update this rule.
+# CRLF line endings are accepted; the pin above covers the raw bytes.
 sums="$(< "$work/SHA256SUMS.extra")"
+sums="${sums//$'\r'/}"
 tar_re="${tar_name//./\\.}" txt_re="${txt_name//./\\.}"
 tar_line="$(grep -E "^[0-9a-f]{64}  $tar_re\$" <<< "$sums" || true)"
 txt_line="$(grep -E "^[0-9a-f]{64}  $txt_re\$" <<< "$sums" || true)"
@@ -72,9 +75,11 @@ fi
 dups="$(sort <<< "$norm" | uniq -d)"
 [ -z "$dups" ] || fail "$tar_name lists the same path twice."
 # Links could redirect a later entry out of the overlay: only files and dirs,
-# and owner-usable ones, so extraction cannot leave an unwritable directory.
-if grep -qvE '^(d[r-]wx|-[r-]w[x-])' <<< "$verbose"; then
-  fail "$tar_name has an entry that is not a regular file or directory, or is not owner-writable."
+# and owner-readable ones (dirs also owner-searchable), so a mode-000 entry
+# cannot break later steps. Read-only files and r-x dirs are fine: tar sets a
+# directory's mode after its children.
+if grep -qvE '^(d[r]([w-])x|-r)' <<< "$verbose"; then
+  fail "$tar_name has an entry that is not a regular file or directory, or whose owner cannot read it."
 fi
 if ! diff <(sort <<< "$listing") <(sort "$work/$txt_name") > /dev/null; then
   fail "$tar_name does not match its listing $txt_name."
