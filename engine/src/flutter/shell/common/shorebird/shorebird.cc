@@ -303,6 +303,9 @@ void ApplyPatchToSettings(const std::string& patch_path, Settings& settings) {
   // FlutterDartProject.mm doesn't start the updater in such an engine; this
   // guards any other caller. Keep the release's code and mark the patch failed,
   // as LoadPatchOrBase does, so the updater stops booting it.
+  //
+  // Load-bearing text: the Shorebird CLI searches the iOS release binary for
+  // "engine cannot run iOS patches" (see FlutterDartProject.mm). Keep it.
   FML_LOG(ERROR) << "Shorebird: this engine cannot run iOS patches, running "
                     "the release's code instead of "
                  << patch_path;
