@@ -7,8 +7,9 @@ name: shorebird_ios_engine_build
 # compile, and the 3.47.9 release couldn't build until #285 fixed it.
 #
 # What it does: `flutter/tools/gn` for the configuration a release ships
-# (ios_release with shorebird_include_mixed_mode, macos.json's `ios`
-# shard), which runs `gn gen --check` over //flutter/shell/* and
+# (ios_release with Route B: --dart-dynamic-modules and
+# shorebird_route_b, macos.json's `ios` shard), which runs `gn gen --check`
+# over //flutter/shell/* and
 # //flutter/runtime/*, then builds the non-test source sets under
 # shell/platform/darwin/{common,ios}, shell/common/shorebird and
 # runtime/shorebird. That builds what those
@@ -166,7 +167,7 @@ jobs:
       # `gn gen --check`, so a source including a header its target doesn't
       # depend on fails here.
       - name: ⚙️ Generate build files (gn gen --check)
-        run: ./flutter/tools/gn --ios --runtime-mode release --gn-arg=shorebird_include_mixed_mode=true --no-prebuilt-dart-sdk --no-rbe
+        run: ./flutter/tools/gn --ios --runtime-mode release --dart-dynamic-modules --gn-args=shorebird_route_b=true --no-prebuilt-dart-sdk --no-rbe
         working-directory: engine/src
 
       # Every non-test source set in those directories, as ninja targets.
