@@ -5262,8 +5262,8 @@ TEST_F(ShellTest, ShorebirdUpdaterReportsOnlyOnceForMultipleShells) {
 //
 // Boot preparation and attribution are Updater::PrepareNextBootPatch(), made
 // from ConfigureShorebird, which a shell test cannot reach (the
-// ConfigureShorebird tests live in shorebird_unittests.cc). So what a shell test
-// can prove is the ABSENCE: no snapshot-resolution path may re-enter the
+// ConfigureShorebird tests live in shorebird_unittests.cc). So what a shell
+// test can prove is the ABSENCE: no snapshot-resolution path may re-enter the
 // updater's launch lifecycle (a start from there is a second reading of the
 // candidate pointer), and success is not banked before user Dart has had its
 // chance, because success and failure share ONE latch and a success recorded

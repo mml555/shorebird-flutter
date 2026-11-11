@@ -438,7 +438,10 @@ bool _launchFrameReported = false;
 /// do without Shorebird's Route B, because the Shell reports the launch.
 final bool _reportsLaunch = _reportsLaunchFromDart();
 
-@Native<Bool Function()>(symbol: 'PlatformConfigurationNativeApi::ReportsLaunchFromDart', isLeaf: true)
+@Native<Bool Function()>(
+  symbol: 'PlatformConfigurationNativeApi::ReportsLaunchFromDart',
+  isLeaf: true,
+)
 external bool _reportsLaunchFromDart();
 
 /// Both outcomes feed ONE atomic latch in `shorebird::Updater`, which already

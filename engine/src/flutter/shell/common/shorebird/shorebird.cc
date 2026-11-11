@@ -198,10 +198,10 @@ void RouteBReport(const std::string& artifact_path, const std::string& line) {
 // The post-attach trace, in its OWN file.
 //
 // Deliberately not appended to `.routeb`. That file carries byte-for-byte
-// committed evidence (`selfhost/engine/route_b/evidence/`) and ABSENCE semantics
-// other probes read as "never armed", so adding lines to it would put this
-// diagnostic in tension with both. A sibling path is discovered the same way by
-// `ios-deploy --download` and costs nothing.
+// committed evidence (`selfhost/engine/route_b/evidence/`) and ABSENCE
+// semantics other probes read as "never armed", so adding lines to it would put
+// this diagnostic in tension with both. A sibling path is discovered the same
+// way by `ios-deploy --download` and costs nothing.
 //
 // No `FML_LOG` mirror either: device logs are not reliably capturable, which is
 // the whole reason this is a file, and duplicating it there invites reading the
@@ -217,12 +217,12 @@ void RouteBTraceWrite(const std::string& artifact_path,
   fclose(f);
 }
 
-// Pure, so it is unit-testable on host with a hand-filled struct — no device, no
-// engine, no patch.
+// Pure, so it is unit-testable on host with a hand-filled struct — no device,
+// no engine, no patch.
 //
 // EVERY FIELD IS PRINTED, including the ones that agree with expectation. The
-// lesson of `applied 1/1` is that a summary hides the thing you did not think to
-// ask about, so this records values and leaves the conclusion to the reader.
+// lesson of `applied 1/1` is that a summary hides the thing you did not think
+// to ask about, so this records values and leaves the conclusion to the reader.
 std::string FormatRouteBTrace(const Dart_RouteBTrace& t,
                               const std::string& library,
                               const std::string& selector,
@@ -232,47 +232,41 @@ std::string FormatRouteBTrace(const Dart_RouteBTrace& t,
   // the fields quietly appended, because a reader that assumes v4's field set
   // would take `tpool_*`'s absence for a measurement.
   o << "rbtrace v=5"
-    << " lib=" << library
-    << " sel=" << selector
-    << " paylen=" << payload_length
-    << " rc=" << t.result
-    << " attach_entered=" << t.attach_entered
+    << " lib=" << library << " sel=" << selector << " paylen=" << payload_length
+    << " rc=" << t.result << " attach_entered=" << t.attach_entered
     << " attach_returned=" << t.attach_returned
-    << " bc_pre=" << t.has_bytecode_pre
-    << " bc_post=" << t.has_bytecode_post
+    << " bc_pre=" << t.has_bytecode_pre << " bc_post=" << t.has_bytecode_post
     << " interp_pre=" << t.is_interpreted_pre
     << " interp_post=" << t.is_interpreted_post
-    << " bc_size=" << t.bytecode_size
-    << " code_pre_size=" << t.code_pre_size
+    << " bc_size=" << t.bytecode_size << " code_pre_size=" << t.code_pre_size
     << " uep_post_is_interpret_call=" << t.entry_point_post_is_interpret_call
     << " caller_scan_status=" << t.caller_scan_status
-    << " pool_status=" << t.pool_status
-    << " pool_index=" << t.pool_index
+    << " pool_status=" << t.pool_status << " pool_index=" << t.pool_index
     << " pool_length=" << t.pool_length
     << " pool_entry_is_function=" << t.pool_entry_is_function
     << " pool_entry_equals_target=" << t.pool_entry_equals_target
     << " caller_resolved=" << t.caller_resolved
-    << " caller_pool_fns=" << t.caller_pool_functions
-    << " caller_pool_matches=" << t.caller_pool_matches_target
-    // DERIVED target->pool identity. `tpool_matches` is authoritative: index and
-    // offset mean an identity ONLY at tpool_status=4 (UNIQUE). At 5 (AMBIGUOUS)
-    // they are the FIRST of several and `tpool_index2` is the next, so the
-    // ambiguity is in the record instead of being resolved by whoever reads it.
+    << " caller_pool_fns=" << t.caller_pool_functions << " caller_pool_matches="
+    << t.caller_pool_matches_target
+    // DERIVED target->pool identity. `tpool_matches` is authoritative: index
+    // and offset mean an identity ONLY at tpool_status=4 (UNIQUE). At 5
+    // (AMBIGUOUS) they are the FIRST of several and `tpool_index2` is the next,
+    // so the ambiguity is in the record instead of being resolved by whoever
+    // reads it.
     << " tpool_status=" << t.target_pool_status
     << " tpool_matches=" << t.target_pool_matches
     << " tpool_index=" << t.target_pool_index
     << " tpool_index2=" << t.target_pool_index_second
     << " tpool_scanned=" << t.target_pool_scanned;
   // TWO LAYERS, LABELLED AS SUCH. v1 printed Code values under `uep_*` and the
-  // resulting mismatch read as a genuine VM anomaly for an entire investigation.
-  o << std::hex << std::showbase
-    << " fn=" << t.function_ptr
+  // resulting mismatch read as a genuine VM anomaly for an entire
+  // investigation.
+  o << std::hex << std::showbase << " fn=" << t.function_ptr
     << " fn_ep_pre=" << t.fn_entry_point_pre
     << " fn_ep_post=" << t.fn_entry_point_post
     << " fn_uep_pre=" << t.fn_unchecked_entry_point_pre
     << " fn_uep_post=" << t.fn_unchecked_entry_point_post
-    << " code_pre=" << t.code_pre
-    << " code_post=" << t.code_post
+    << " code_pre=" << t.code_pre << " code_post=" << t.code_post
     << " code_ep_pre=" << t.code_entry_point_pre
     << " code_ep_post=" << t.code_entry_point_post
     << " code_uep_pre=" << t.code_unchecked_entry_point_pre
@@ -316,154 +310,165 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
   }
   auto existing = settings.root_isolate_create_callback;
 
-  settings.root_isolate_create_callback =
-      [existing, path](const DartIsolate& isolate) {
-        if (existing) {
-          existing(isolate);
-        }
-        RouteBReport(path, "hook entered");
+  settings.root_isolate_create_callback = [existing,
+                                           path](const DartIsolate& isolate) {
+    if (existing) {
+      existing(isolate);
+    }
+    RouteBReport(path, "hook entered");
 
-        auto mapping = fml::FileMapping::CreateReadOnly(path);
-        if (!mapping || mapping->GetSize() == 0) {
-          RouteBReport(path, "REFUSED (unreadable)");
-          return;
-        }
+    auto mapping = fml::FileMapping::CreateReadOnly(path);
+    if (!mapping || mapping->GetSize() == 0) {
+      RouteBReport(path, "REFUSED (unreadable)");
+      return;
+    }
 
-        route_b::Container container;
-        std::string error;
-        const auto status = route_b::Parse(mapping->GetMapping(),
-                                           mapping->GetSize(), &container,
-                                           &error);
-        if (status != route_b::ContainerStatus::kOk) {
-          RouteBReport(path, std::string("REFUSED (") +
-                                 route_b::StatusName(status) + "): " + error);
-          return;
-        }
-        RouteBReport(path, "parsed, targets=" +
-                               std::to_string(container.targets.size()) +
-                               ", built-for=" + container.release_build_id);
+    route_b::Container container;
+    std::string error;
+    const auto status = route_b::Parse(mapping->GetMapping(),
+                                       mapping->GetSize(), &container, &error);
+    if (status != route_b::ContainerStatus::kOk) {
+      RouteBReport(path, std::string("REFUSED (") +
+                             route_b::StatusName(status) + "): " + error);
+      return;
+    }
+    RouteBReport(path,
+                 "parsed, targets=" + std::to_string(container.targets.size()) +
+                     ", built-for=" + container.release_build_id);
 
-        // RELEASE IDENTITY BEFORE TARGET RESOLUTION. Patch bytecode is compiled
-        // against one release's kernel, so applying it elsewhere is undefined
-        // rather than merely unsupported. Checking it here means a stale
-        // payload says "wrong release" instead of degrading into a target or
-        // attach failure three steps later -- which is the single most
-        // expensive diagnostic confusion this project has had.
-        char* running = Dart_RouteBReleaseBuildId();
-        if (running == nullptr) {
-          // No identity is not "any identity". Refuse.
+    // RELEASE IDENTITY BEFORE TARGET RESOLUTION. Patch bytecode is compiled
+    // against one release's kernel, so applying it elsewhere is undefined
+    // rather than merely unsupported. Checking it here means a stale
+    // payload says "wrong release" instead of degrading into a target or
+    // attach failure three steps later -- which is the single most
+    // expensive diagnostic confusion this project has had.
+    char* running = Dart_RouteBReleaseBuildId();
+    if (running == nullptr) {
+      // No identity is not "any identity". Refuse.
+      RouteBReport(path,
+                   "REFUSED (no-release-identity): this snapshot carries "
+                   "no build ID");
+      return;
+    }
+    const std::string running_id(running);
+    ::free(running);
+    RouteBReport(path, "running=" + running_id);
+    if (running_id != container.release_build_id) {
+      RouteBReport(path, std::string("REFUSED (") +
+                             route_b::StatusName(
+                                 route_b::ContainerStatus::kWrongRelease) +
+                             "): built for " + container.release_build_id +
+                             ", running " + running_id);
+      return;
+    }
+
+    // THE NEGATIVE CONTROL'S SUPPLY SIDE, and the only reason a non-zero
+    // offset reaches the runtime. The runtime gates its assertion path on
+    // `pool_offset != 0`, so without a supplied offset that independent
+    // instrument is unreachable and a green `tpool_status` would be
+    // compile evidence wearing a measurement's clothes.
+    //
+    // The default is the historical 0xd4a8 because that is the value the
+    // control is specified against. It is a DEFAULT, not a special case: it
+    // applies to every target rather than one selector, nothing derives an
+    // identity from it (the derived `tpool_*` scan is the producer), and an
+    // operator overrides it per run by dropping a value beside the active
+    // patch, with no rebuild. Whether 0xd4a8 lands in range in a release
+    // that does not exist yet is not knowable in advance.
+    //
+    // DIAGNOSTIC. Remove with the investigation: removing it costs only
+    // this block.
+    int64_t assert_pool_offset = kDefaultAssertPoolOffset;
+    {
+      const std::string sidecar = path + ".assert_pool_offset";
+      auto sc = fml::FileMapping::CreateReadOnly(sidecar);
+      if (sc && sc->GetSize() > 0) {
+        const std::string raw(reinterpret_cast<const char*>(sc->GetMapping()),
+                              sc->GetSize());
+        char* end = nullptr;
+        // Base 0: `0x...` is hex, bare digits decimal.
+        const long long v = ::strtoll(raw.c_str(), &end, 0);
+        // A PARSE FAILURE IS REPORTED, NEVER ABSORBED. The default stands
+        // so the control still runs, and `pool_offset=` in the trace
+        // records what was ACTUALLY supplied.
+        if (end == raw.c_str()) {
           RouteBReport(path,
-                       "REFUSED (no-release-identity): this snapshot carries "
-                       "no build ID");
-          return;
+                       "assert-pool-offset sidecar UNPARSEABLE, keeping "
+                       "default 0xd4a8");
+        } else {
+          assert_pool_offset = static_cast<int64_t>(v);
         }
-        const std::string running_id(running);
-        ::free(running);
-        RouteBReport(path, "running=" + running_id);
-        if (running_id != container.release_build_id) {
-          RouteBReport(path, std::string("REFUSED (") +
-                                 route_b::StatusName(
-                                     route_b::ContainerStatus::kWrongRelease) +
-                                 "): built for " +
-                                 container.release_build_id + ", running " +
-                                 running_id);
-          return;
-        }
+      }
+    }
+    {
+      std::ostringstream ao;
+      ao << "assert-pool-offset supplied=" << std::hex << std::showbase
+         << assert_pool_offset;
+      RouteBReport(path, ao.str());
+    }
 
-        // THE NEGATIVE CONTROL'S SUPPLY SIDE, and the only reason a non-zero
-        // offset reaches the runtime. The runtime gates its assertion path on
-        // `pool_offset != 0`, so without a supplied offset that independent
-        // instrument is unreachable and a green `tpool_status` would be
-        // compile evidence wearing a measurement's clothes.
-        //
-        // The default is the historical 0xd4a8 because that is the value the
-        // control is specified against. It is a DEFAULT, not a special case: it
-        // applies to every target rather than one selector, nothing derives an
-        // identity from it (the derived `tpool_*` scan is the producer), and an
-        // operator overrides it per run by dropping a value beside the active
-        // patch, with no rebuild. Whether 0xd4a8 lands in range in a release
-        // that does not exist yet is not knowable in advance.
-        //
-        // DIAGNOSTIC. Remove with the investigation: removing it costs only
-        // this block.
-        int64_t assert_pool_offset = kDefaultAssertPoolOffset;
-        {
-          const std::string sidecar = path + ".assert_pool_offset";
-          auto sc = fml::FileMapping::CreateReadOnly(sidecar);
-          if (sc && sc->GetSize() > 0) {
-            const std::string raw(
-                reinterpret_cast<const char*>(sc->GetMapping()),
-                sc->GetSize());
-            char* end = nullptr;
-            // Base 0: `0x...` is hex, bare digits decimal.
-            const long long v = ::strtoll(raw.c_str(), &end, 0);
-            // A PARSE FAILURE IS REPORTED, NEVER ABSORBED. The default stands
-            // so the control still runs, and `pool_offset=` in the trace
-            // records what was ACTUALLY supplied.
-            if (end == raw.c_str()) {
-              RouteBReport(path,
-                           "assert-pool-offset sidecar UNPARSEABLE, keeping "
-                           "default 0xd4a8");
-            } else {
-              assert_pool_offset = static_cast<int64_t>(v);
-            }
-          }
-        }
-        {
-          std::ostringstream ao;
-          ao << "assert-pool-offset supplied=" << std::hex << std::showbase
-             << assert_pool_offset;
-          RouteBReport(path, ao.str());
-        }
-
-        int applied = 0;
-        for (const auto& target : container.targets) {
-          Dart_RouteBTrace trace;
-          // The target's pool location is DERIVED inside
-          // Dart_RouteBActivatePatchTraced from the target's own identity, so
-          // it needs nothing supplied. What is passed as `pool_offset` is the
-          // ASSERTION's subject ("does this slot hold the target?"), answered
-          // independently of the derived scan and reported beside it in the
-          // same trace. The two instruments are wired to disagree, which is
-          // what makes a disagreement evidence.
-          const int32_t result = Dart_RouteBActivatePatchTraced(
-              target.bytecode, static_cast<intptr_t>(target.length),
-              target.library.c_str(), target.selector.c_str(), &trace,
-              /*caller_name=*/nullptr, assert_pool_offset);
-          // FOR EVERY TARGET, SUCCESS INCLUDED. The success path below `continue`s,
-          // so until now a target that "worked" contributed nothing but the
-          // applied N/N tally — which is exactly how `applied 1/1` came to be the
-          // entire story for four device runs.
-          RouteBTraceWrite(path, FormatRouteBTrace(trace, target.library,
-                                                   target.selector,
-                                                   target.length));
-          if (result == Dart_RouteB_Ok) {
-            applied++;
-            continue;
-          }
-          // Named, not numbered. A code nobody can read is a bool with extra
-          // steps.
-          const char* reason = "unknown";
-          switch (result) {
-            case Dart_RouteB_NoIsolate: reason = "no-isolate"; break;
-            case Dart_RouteB_EmptyPayload: reason = "empty-payload"; break;
-            case Dart_RouteB_InvalidBytecode: reason = "invalid-bytecode"; break;
-            case Dart_RouteB_TargetMissing: reason = "target-missing"; break;
-            case Dart_RouteB_AlreadyInterpreted:
-              reason = "already-interpreted";
-              break;
-            case Dart_RouteB_AttachFailed: reason = "attach-failed"; break;
-            case Dart_RouteB_Unsupported: reason = "unsupported-build"; break;
-            case Dart_RouteB_OutOfMemory: reason = "out-of-memory"; break;
-            default: break;
-          }
-          RouteBReport(path, "target " + target.selector + " in " +
-                                 target.library + " REFUSED (" + reason + ")");
-        }
-        RouteBReport(path, "applied " + std::to_string(applied) + "/" +
-                               std::to_string(container.targets.size()) +
-                               " targets, entering main");
-      };
+    int applied = 0;
+    for (const auto& target : container.targets) {
+      Dart_RouteBTrace trace;
+      // The target's pool location is DERIVED inside
+      // Dart_RouteBActivatePatchTraced from the target's own identity, so
+      // it needs nothing supplied. What is passed as `pool_offset` is the
+      // ASSERTION's subject ("does this slot hold the target?"), answered
+      // independently of the derived scan and reported beside it in the
+      // same trace. The two instruments are wired to disagree, which is
+      // what makes a disagreement evidence.
+      const int32_t result = Dart_RouteBActivatePatchTraced(
+          target.bytecode, static_cast<intptr_t>(target.length),
+          target.library.c_str(), target.selector.c_str(), &trace,
+          /*caller_name=*/nullptr, assert_pool_offset);
+      // FOR EVERY TARGET, SUCCESS INCLUDED. The success path below `continue`s,
+      // so until now a target that "worked" contributed nothing but the
+      // applied N/N tally — which is exactly how `applied 1/1` came to be the
+      // entire story for four device runs.
+      RouteBTraceWrite(path, FormatRouteBTrace(trace, target.library,
+                                               target.selector, target.length));
+      if (result == Dart_RouteB_Ok) {
+        applied++;
+        continue;
+      }
+      // Named, not numbered. A code nobody can read is a bool with extra
+      // steps.
+      const char* reason = "unknown";
+      switch (result) {
+        case Dart_RouteB_NoIsolate:
+          reason = "no-isolate";
+          break;
+        case Dart_RouteB_EmptyPayload:
+          reason = "empty-payload";
+          break;
+        case Dart_RouteB_InvalidBytecode:
+          reason = "invalid-bytecode";
+          break;
+        case Dart_RouteB_TargetMissing:
+          reason = "target-missing";
+          break;
+        case Dart_RouteB_AlreadyInterpreted:
+          reason = "already-interpreted";
+          break;
+        case Dart_RouteB_AttachFailed:
+          reason = "attach-failed";
+          break;
+        case Dart_RouteB_Unsupported:
+          reason = "unsupported-build";
+          break;
+        case Dart_RouteB_OutOfMemory:
+          reason = "out-of-memory";
+          break;
+        default:
+          break;
+      }
+      RouteBReport(path, "target " + target.selector + " in " + target.library +
+                             " REFUSED (" + reason + ")");
+    }
+    RouteBReport(path, "applied " + std::to_string(applied) + "/" +
+                           std::to_string(container.targets.size()) +
+                           " targets, entering main");
+  };
 }
 #endif  // SHOREBIRD_ROUTE_B
 

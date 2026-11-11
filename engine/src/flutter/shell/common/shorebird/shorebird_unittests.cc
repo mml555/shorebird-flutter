@@ -342,6 +342,5 @@ TEST(ApplyPatchToSettings, LeavesANonContainerToThePlatformPath) {
 }
 #endif  // SHOREBIRD_ROUTE_B
 
-
 }  // namespace testing
 }  // namespace flutter
