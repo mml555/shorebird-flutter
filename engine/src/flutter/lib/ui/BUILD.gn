@@ -193,15 +193,15 @@ source_set("ui") {
     "//third_party/zlib",
   ]
 
-  if (shorebird_route_b) {
-    # platform_configuration.cc reports the launch outcome from the Dart
-    # startup boundary. `:updater` is a leaf (its own deps are `//flutter/fml`,
-    # `:engine_callbacks` and the Rust lib), so the edge adds no cycle, and
-    # lib/ui already public_deps on other `//flutter/shell/common:*` targets.
-    # Caught by `gn --check`, not by compiling: adding an #include does not
-    # trigger a gn regen, so the dependency check can be stale.
-    deps += [ "//flutter/shell/common/shorebird:updater" ]
-  }
+  # platform_configuration.cc reports the launch outcome from the Dart startup
+  # boundary when shorebird_route_b is on. `:updater` is a leaf (its own deps
+  # are `//flutter/fml`, `:engine_callbacks` and the Rust lib), so the edge
+  # adds no cycle, and runtime/ and shell/common/ already depend on it
+  # unconditionally. It is unconditional here too, although only Route B
+  # includes the header: gn's include check sees the #include whatever the
+  # #if says, so a dependency only under `if (shorebird_route_b)` failed
+  # `gn gen --check` in every Route-B-off build.
+  deps += [ "//flutter/shell/common/shorebird:updater" ]
 
   if (impeller_supports_rendering) {
     sources += [
