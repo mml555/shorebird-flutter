@@ -829,11 +829,17 @@ void Shell::RunEngine(
               // rolled back; the update thread still starts.
               shorebird::Updater::Instance().ReportRunFailure();
             } else {
+#if !SHOREBIRD_ROUTE_B
               // Shorebird: the root isolate group was created from the
               // (possibly patched) snapshot and its entrypoint invoked, so
               // the snapshot loaded (FailureAlreadyRunning: it had already).
               // Starts the update thread.
               shorebird::Updater::Instance().ReportLaunchSuccess();
+#endif  // !SHOREBIRD_ROUTE_B
+              // A Route B engine reports success from Dart, whichever comes
+              // first: `main` completing or the first framework frame
+              // (lib/ui/hooks.dart). Engine::Run returns before any user Dart
+              // executes, so this point cannot observe a Dart-phase outcome.
             }
 
             result(run_result);
