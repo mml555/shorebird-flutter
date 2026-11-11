@@ -44,8 +44,10 @@ declare_args() {
   # activation hook for a Route B container, boot preparation is the updater's
   # single atomic call, and launch success is reported from Dart (see
   # lib/ui/hooks.dart). It does not turn on dart_dynamic_modules: pass
-  # --dart-dynamic-modules to tools/gn, or an engine built without it refuses
-  # every patch as unsupported-build.
+  # --dart-dynamic-modules to tools/gn. gn refuses the combination without it
+  # (an assert in shell/common/shorebird/BUILD.gn, where dart_dynamic_modules is
+  # visible), because an engine without it refuses every patch as
+  # unsupported-build.
   #
   # Off by default, and off changes nothing.
   shorebird_route_b = false

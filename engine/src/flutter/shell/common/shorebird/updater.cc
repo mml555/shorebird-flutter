@@ -82,7 +82,14 @@ std::string Updater::PrepareNextBootPatch() {
   if (boot_prepared_) {
     return prepared_path_;
   }
-  prepared_path_ = DoPrepareNextBootPatch();
+  const std::string path = DoPrepareNextBootPatch();
+  // Only an initialised updater's answer is an answer. Without one the call
+  // fails and returns "boot the base release", and caching that would pin the
+  // whole process to the base release even if a later engine initialises.
+  if (!IsInitialized()) {
+    return path;
+  }
+  prepared_path_ = path;
   boot_prepared_ = true;
   return prepared_path_;
 }
@@ -110,6 +117,14 @@ void Updater::ReportLaunchSuccess() {
   // from TryLoadFromPatch, and the base-code boot reaching here is the launch
   // that most needs a replacement patch. See the class comment.
   MaybeStartUpdateThread();
+}
+
+void Updater::AbstainFromLaunchReport() {
+  // Claims the same once-per-process latch a report would, but forwards
+  // nothing: no success and no failure. A later ReportLaunchSuccess (from Dart)
+  // or ReportLaunchFailure is then a no-op, so a patch whose state could not be
+  // judged is neither credited nor tombstoned by this process.
+  launch_completed_.store(true);
 }
 
 void Updater::MaybeStartUpdateThread() {

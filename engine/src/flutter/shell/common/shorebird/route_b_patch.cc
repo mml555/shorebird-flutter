@@ -18,6 +18,10 @@ constexpr char kMagic[8] = {'S', 'B', 'R', 'B', 'P', 'T', 'C', 'H'};
 constexpr uint32_t kFormatVersion = 1;
 // magic(8) + version(4) + headerLen(4). Anything shorter cannot be a container.
 constexpr size_t kFixedHeaderSize = 16;
+// A real header is a few hundred bytes per target. The cap keeps a hostile
+// header_len (a uint32, so up to 4 GiB) from being copied into a std::string
+// and handed to the JSON parser.
+constexpr uint32_t kMaxHeaderSize = 1024 * 1024;
 
 uint32_t ReadU32LE(const uint8_t* p) {
   return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
@@ -30,8 +34,10 @@ uint32_t ReadU32LE(const uint8_t* p) {
 // Implemented here rather than pulled in because no shell target depends on
 // boringssl today and this is an integrity check, not a security boundary --
 // the bytes have already been sha256-verified end-to-end by the updater's
-// install step by the time we see them. A NIST test vector is asserted in
-// route_b_patch_unittests.cc; do not touch this without running it.
+// install step by the time we see them. The NIST vectors for "abc" and the
+// 448-bit two-block message, plus inputs on both sides of the 56-byte padding
+// boundary, are asserted in route_b_patch_unittests.cc; do not touch this
+// without running it.
 class Sha256 {
  public:
   Sha256() = default;
@@ -141,12 +147,6 @@ class Sha256 {
   uint64_t bit_len_ = 0;
 };
 
-std::string Sha256Hex(const uint8_t* data, size_t len) {
-  Sha256 h;
-  h.Update(data, len);
-  return h.HexDigest();
-}
-
 ContainerStatus Fail(ContainerStatus status,
                      std::string* error,
                      const std::string& message) {
@@ -157,6 +157,12 @@ ContainerStatus Fail(ContainerStatus status,
 }
 
 }  // namespace
+
+std::string Sha256Hex(const uint8_t* data, size_t len) {
+  Sha256 h;
+  h.Update(data, len);
+  return h.HexDigest();
+}
 
 const char* StatusName(ContainerStatus status) {
   switch (status) {
@@ -172,24 +178,31 @@ const char* StatusName(ContainerStatus status) {
       return "wrong-release";
     case ContainerStatus::kPayloadCorrupt:
       return "payload-corrupt";
+    case ContainerStatus::kUnreadable:
+      return "unreadable";
   }
   return "unknown";
 }
 
 ContainerStatus SniffFile(const std::string& path) {
   if (!fml::IsFile(path)) {
-    return ContainerStatus::kNotAContainer;
+    // The updater named this path, so a file that is not there is a failure to
+    // read it, not evidence about what it holds.
+    return ContainerStatus::kUnreadable;
   }
   FILE* f = fopen(path.c_str(), "rb");
   if (f == nullptr) {
-    // Unreadable is "not mine" rather than an error: whatever this is, the
-    // Route B path cannot claim it, and the existing code path will report its
-    // own failure with better context.
-    return ContainerStatus::kNotAContainer;
+    return ContainerStatus::kUnreadable;
   }
   uint8_t head[sizeof(kMagic)] = {};
   const size_t read = fread(head, 1, sizeof(head), f);
+  const bool read_error = ferror(f) != 0;
   fclose(f);
+  if (read_error) {
+    // Not "not mine": a transient failure (EMFILE, protected data) says
+    // nothing about what the file is, and callers must not judge it.
+    return ContainerStatus::kUnreadable;
+  }
   if (read != sizeof(head) || memcmp(head, kMagic, sizeof(kMagic)) != 0) {
     return ContainerStatus::kNotAContainer;
   }
@@ -221,6 +234,9 @@ ContainerStatus Parse(const uint8_t* bytes,
   }
 
   const uint32_t header_len = ReadU32LE(bytes + 12);
+  if (header_len > kMaxHeaderSize) {
+    return Fail(ContainerStatus::kMalformed, error, "header is too large");
+  }
   if (kFixedHeaderSize + static_cast<uint64_t>(header_len) > length) {
     return Fail(ContainerStatus::kMalformed, error,
                 "header runs past end of file");
@@ -229,7 +245,10 @@ ContainerStatus Parse(const uint8_t* bytes,
   const std::string header_json(
       reinterpret_cast<const char*>(bytes + kFixedHeaderSize), header_len);
   rapidjson::Document doc;
-  doc.Parse(header_json.c_str(), header_json.size());
+  // Iterative, so nesting depth costs heap rather than stack: this runs on
+  // whichever thread creates the isolate, before main.
+  doc.Parse<rapidjson::kParseIterativeFlag>(header_json.c_str(),
+                                            header_json.size());
   if (doc.HasParseError() || !doc.IsObject()) {
     return Fail(ContainerStatus::kMalformed, error, "header is not JSON");
   }
@@ -260,7 +279,10 @@ ContainerStatus Parse(const uint8_t* bytes,
     }
     const uint64_t offset = entry["offset"].GetUint64();
     const uint64_t len = entry["length"].GetUint64();
-    if (base + offset + len > length || base + offset < base) {
+    // Overflow-safe: `base <= length` holds (checked with header_len above), so
+    // the subtractions cannot wrap, and no sum of attacker-supplied values is
+    // ever formed. `base + offset + len` wrapped for a huge len.
+    if (offset > length - base || len > length - base - offset) {
       return Fail(ContainerStatus::kMalformed, error,
                   "payload runs past end of file");
     }

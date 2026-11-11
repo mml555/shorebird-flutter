@@ -1,6 +1,8 @@
 
 #include "flutter/shell/common/shorebird/shorebird.h"
 
+#include <algorithm>
+#include <cerrno>
 #include <cstddef>
 #include <cstdlib>
 #include <memory>
@@ -228,10 +230,11 @@ std::string FormatRouteBTrace(const Dart_RouteBTrace& t,
                               const std::string& selector,
                               size_t payload_length) {
   std::ostringstream o;
-  // v=5 adds the derived target->pool fields. The version is bumped rather than
-  // the fields quietly appended, because a reader that assumes v4's field set
-  // would take `tpool_*`'s absence for a measurement.
-  o << "rbtrace v=5"
+  // v=5 added the derived target->pool fields; v=6 removes the raw pointers.
+  // The version is bumped rather than the fields quietly changed, because a
+  // reader that assumes the old field set would take a field's absence for a
+  // measurement.
+  o << "rbtrace v=6"
     << " lib=" << library << " sel=" << selector << " paylen=" << payload_length
     << " rc=" << t.result << " attach_entered=" << t.attach_entered
     << " attach_returned=" << t.attach_returned
@@ -258,25 +261,49 @@ std::string FormatRouteBTrace(const Dart_RouteBTrace& t,
     << " tpool_index=" << t.target_pool_index
     << " tpool_index2=" << t.target_pool_index_second
     << " tpool_scanned=" << t.target_pool_scanned;
-  // TWO LAYERS, LABELLED AS SUCH. v1 printed Code values under `uep_*` and the
-  // resulting mismatch read as a genuine VM anomaly for an entire
-  // investigation.
-  o << std::hex << std::showbase << " fn=" << t.function_ptr
-    << " fn_ep_pre=" << t.fn_entry_point_pre
-    << " fn_ep_post=" << t.fn_entry_point_post
-    << " fn_uep_pre=" << t.fn_unchecked_entry_point_pre
-    << " fn_uep_post=" << t.fn_unchecked_entry_point_post
-    << " code_pre=" << t.code_pre << " code_post=" << t.code_post
-    << " code_ep_pre=" << t.code_entry_point_pre
-    << " code_ep_post=" << t.code_entry_point_post
-    << " code_uep_pre=" << t.code_unchecked_entry_point_pre
-    << " code_uep_post=" << t.code_unchecked_entry_point_post
-    << " interpret_call_ep=" << t.interpret_call_entry_point
-    << " caller_pool_other_fn=" << t.caller_pool_other_fn
-    << " pool_offset=" << t.pool_offset
-    << " tpool_offset=" << t.target_pool_offset
-    << " pool_entry_ptr=" << t.pool_entry_ptr;
+  // NO RAW VM POINTERS. v5 also printed Function/Code/pool-entry addresses
+  // (`fn=`, `code_*`, `fn_ep_*`, `interpret_call_ep`, `pool_entry_ptr`...).
+  // This file sits in the app's own container, which device backups include,
+  // and an address there is a free ASLR leak for whoever reads the backup. What
+  // they were for -- telling the Function-level entry point from the
+  // Code-level one -- is answered by the booleans above
+  // (`uep_post_is_interpret_call`, `pool_entry_equals_target`), which say
+  // whether the addresses AGREED, and agreement is the measurement. Offsets are
+  // positions in a pool, not addresses, and stay.
+  o << std::hex << std::showbase << " pool_offset=" << t.pool_offset
+    << " tpool_offset=" << t.target_pool_offset;
   return o.str();
+}
+
+// Parses the assert-pool-offset sidecar. Pure, so the decision is testable
+// without a VM. The whole text must be one integer (base 0: `0x...` hex, bare
+// digits decimal, surrounding whitespace allowed): `0x1zzz` is not 0x1. Returns
+// false, leaving *out untouched, when it is not.
+bool ParseAssertPoolOffset(const std::string& raw, int64_t* out) {
+  const char* begin = raw.c_str();
+  char* end = nullptr;
+  errno = 0;
+  const long long v = ::strtoll(begin, &end, 0);
+  if (end == begin || errno == ERANGE) {
+    return false;
+  }
+  while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
+    end++;
+  }
+  if (*end != '\0') {
+    return false;
+  }
+  *out = static_cast<int64_t>(v);
+  return true;
+}
+
+// Whether a container took full effect. `live` counts targets that are running
+// the patch: freshly attached, or already interpreted (a spawned engine's
+// isolate group, or a second hook run, finds the target live already and the
+// VM says so rather than attaching twice). Anything short of every target is
+// NOT a patch: it is a partly patched app the VM cannot roll back.
+bool RouteBFullyApplied(size_t total, size_t live) {
+  return total > 0 && live == total;
 }
 
 // Route B (selfhost), SEAM 6: activate a patch after the root isolate exists
@@ -317,9 +344,29 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
     }
     RouteBReport(path, "hook entered");
 
+    // THE OUTCOME RULE. Every outcome other than "every target applied"
+    // reports launch FAILURE here, before Dart starts: refused (malformed,
+    // unsupported version, corrupt), wrong release, no release identity,
+    // applied 0/N, and partial N/M. Failure takes the Updater's
+    // once-per-process latch, so the success Dart reports later (main
+    // returning, first frame) is dropped. Without this the app boots on the
+    // previous code, or half-patched, the success is credited to the new patch,
+    // and the updater promotes it and deletes the last known-good one. A patch
+    // that did not fully take effect must never be promoted over the previous
+    // good one.
+    //
+    // The one exception is an unreadable artifact, which abstains (see below).
+    auto ReportRefusal = [] {
+      shorebird::Updater::Instance().ReportLaunchFailure();
+    };
+
     auto mapping = fml::FileMapping::CreateReadOnly(path);
     if (!mapping || mapping->GetSize() == 0) {
+      // ABSTAIN, do not fail. Being unable to read the artifact is not
+      // evidence about the patch (EMFILE, protected data not yet available),
+      // so this process neither activates it nor credits or tombstones it.
       RouteBReport(path, "REFUSED (unreadable)");
+      shorebird::Updater::Instance().AbstainFromLaunchReport();
       return;
     }
 
@@ -330,6 +377,7 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
     if (status != route_b::ContainerStatus::kOk) {
       RouteBReport(path, std::string("REFUSED (") +
                              route_b::StatusName(status) + "): " + error);
+      ReportRefusal();
       return;
     }
     RouteBReport(path,
@@ -348,6 +396,7 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
       RouteBReport(path,
                    "REFUSED (no-release-identity): this snapshot carries "
                    "no build ID");
+      ReportRefusal();
       return;
     }
     const std::string running_id(running);
@@ -359,6 +408,7 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
                                  route_b::ContainerStatus::kWrongRelease) +
                              "): built for " + container.release_build_id +
                              ", running " + running_id);
+      ReportRefusal();
       return;
     }
 
@@ -383,20 +433,16 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
       const std::string sidecar = path + ".assert_pool_offset";
       auto sc = fml::FileMapping::CreateReadOnly(sidecar);
       if (sc && sc->GetSize() > 0) {
+        const size_t kMaxSidecar = 64;  // an integer, not a payload
         const std::string raw(reinterpret_cast<const char*>(sc->GetMapping()),
-                              sc->GetSize());
-        char* end = nullptr;
-        // Base 0: `0x...` is hex, bare digits decimal.
-        const long long v = ::strtoll(raw.c_str(), &end, 0);
+                              std::min(sc->GetSize(), kMaxSidecar));
         // A PARSE FAILURE IS REPORTED, NEVER ABSORBED. The default stands
         // so the control still runs, and `pool_offset=` in the trace
         // records what was ACTUALLY supplied.
-        if (end == raw.c_str()) {
+        if (!ParseAssertPoolOffset(raw, &assert_pool_offset)) {
           RouteBReport(path,
                        "assert-pool-offset sidecar UNPARSEABLE, keeping "
                        "default 0xd4a8");
-        } else {
-          assert_pool_offset = static_cast<int64_t>(v);
         }
       }
     }
@@ -408,6 +454,7 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
     }
 
     int applied = 0;
+    size_t live = 0;
     for (const auto& target : container.targets) {
       Dart_RouteBTrace trace;
       // The target's pool location is DERIVED inside
@@ -429,7 +476,12 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
                                                target.selector, target.length));
       if (result == Dart_RouteB_Ok) {
         applied++;
+        live++;
         continue;
+      }
+      if (result == Dart_RouteB_AlreadyInterpreted) {
+        // Live, not failed: see RouteBFullyApplied.
+        live++;
       }
       // Named, not numbered. A code nobody can read is a bool with extra
       // steps.
@@ -468,6 +520,9 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
     RouteBReport(path, "applied " + std::to_string(applied) + "/" +
                            std::to_string(container.targets.size()) +
                            " targets, entering main");
+    if (!RouteBFullyApplied(container.targets.size(), live)) {
+      ReportRefusal();
+    }
   };
 }
 #endif  // SHOREBIRD_ROUTE_B
@@ -626,7 +681,17 @@ void ApplyPatchToSettings(const std::string& patch_path, Settings& settings) {
   // engine two ran the original AOT code while engine one ran the patch. A
   // genuine init failure yields no patch path, and an empty path never gets
   // here.
-  if (route_b::SniffFile(patch_path) == route_b::ContainerStatus::kOk) {
+  const auto sniffed = route_b::SniffFile(patch_path);
+  if (sniffed == route_b::ContainerStatus::kUnreadable) {
+    // ABSTAIN. A read failure says nothing about the patch: this process does
+    // not arm it, and reports neither success nor failure for it, so a
+    // transient EMFILE cannot tombstone a good patch or credit one never run.
+    FML_LOG(ERROR) << "Shorebird: cannot read the active patch " << patch_path
+                   << "; not activating it and not reporting on it";
+    shorebird::Updater::Instance().AbstainFromLaunchReport();
+    return;
+  }
+  if (sniffed == route_b::ContainerStatus::kOk) {
     FML_LOG(INFO) << "Shorebird updater: active patch is a Route B container";
     InstallRouteBActivationHook(settings, patch_path);
     return;

@@ -80,6 +80,15 @@ void ApplyPatchToSettings(const std::string& patch_path, Settings& settings);
 std::string GetValueFromYaml(const std::string& yaml, const std::string& key);
 
 #if SHOREBIRD_ROUTE_B
+/// Parses the assert-pool-offset sidecar text: one integer, base 0, trailing
+/// whitespace allowed. False (and *out untouched) for anything else.
+/// Exposed for testing.
+bool ParseAssertPoolOffset(const std::string& raw, int64_t* out);
+
+/// Whether |live| of |total| targets means the container took full effect.
+/// Exposed for testing.
+bool RouteBFullyApplied(size_t total, size_t live);
+
 /// Arms Route B activation on |settings|: installs a
 /// root_isolate_create_callback that applies the container at |path| once the
 /// root isolate exists, after its libraries load and before main runs.

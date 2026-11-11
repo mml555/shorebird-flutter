@@ -164,6 +164,14 @@ class Updater {
   void ReportLaunchSuccess();
   void ReportLaunchFailure();
 
+  /// Record that this process cannot judge the booting patch, so it reports
+  /// neither outcome. Use when the evidence is a read failure rather than a
+  /// property of the patch (an unreadable artifact says nothing about it). It
+  /// consumes the same latch as the two reports, so a later success or failure
+  /// from this process is dropped. What the updater then concludes from a boot
+  /// with no recorded outcome is the updater's policy, not decided here.
+  void AbstainFromLaunchReport();
+
   // Update checking
   virtual bool ShouldAutoUpdate() = 0;
   virtual void StartUpdateThread() = 0;

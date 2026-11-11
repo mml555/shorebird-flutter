@@ -1,6 +1,7 @@
 #include "flutter/shell/common/shorebird/shorebird.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -203,12 +204,21 @@ TEST(ApplyPatchToSettings, LeavesSettingsAloneWithoutAPatch) {
 
 // This host binary runs without the interpreter, as Android does, where a
 // patch replaces the release's library outright.
+//
+// The patch is a real file: a Route B engine reads it to tell a container from
+// an ordinary code patch, and abstains when it cannot read it.
 TEST(ApplyPatchToSettings, ReplacesTheLibraryWithThePatch) {
+  fml::ScopedTemporaryDirectory dir;
+  const std::string patch = fml::paths::JoinPaths({dir.path(), "patch.vmcode"});
+  {
+    std::ofstream out(patch, std::ios::binary);
+    out << "an ordinary code patch";
+  }
   Settings settings;
   settings.application_library_paths = {"libapp.so", "/data/app/libapp.so"};
-  ApplyPatchToSettings("patch.vmcode", settings);
+  ApplyPatchToSettings(patch, settings);
   EXPECT_EQ(settings.application_library_paths,
-            std::vector<std::string>({"patch.vmcode"}));
+            std::vector<std::string>({patch}));
 }
 
 // Desktop multi-window: a second engine in the same process gets
@@ -274,19 +284,106 @@ TEST(Shorebird, RouteBArmingInstallsACallbackForAPatch) {
   EXPECT_NE(settings.root_isolate_create_callback, nullptr);
 }
 
-TEST(Shorebird, RouteBArmingChainsAnExistingCallback) {
+namespace {
+// The hook ignores its isolate argument, so tests that run it on host, where
+// no DartIsolate can be made, give it a reference that is never read.
+const DartIsolate& NeverReadIsolate() {
+  alignas(std::max_align_t) static char storage[1];
+  return *reinterpret_cast<const DartIsolate*>(storage);
+}
+
+std::string WriteFile(const fml::ScopedTemporaryDirectory& dir,
+                      const std::string& bytes) {
+  const std::string path = fml::paths::JoinPaths({dir.path(), "dlc.vmcode"});
+  std::ofstream out(path, std::ios::binary);
+  out << bytes;
+  return path;
+}
+}  // namespace
+
+// Replacing rather than chaining would silently disable whatever the embedder
+// installed, and the symptom would appear nowhere near Route B. Runs the
+// installed callback (the path is unreadable, so it stops before any VM call)
+// and checks the pre-existing one ran, once, and that Route B's own hook ran
+// too (its abstain is visible in the updater).
+TEST_F(ConfigureShorebirdTest, RouteBArmingChainsAnExistingCallback) {
   Settings settings;
   int existing_calls = 0;
   settings.root_isolate_create_callback = [&existing_calls](const auto&) {
     existing_calls++;
   };
   InstallRouteBActivationHook(settings, "/nonexistent/dlc.vmcode");
-  EXPECT_NE(settings.root_isolate_create_callback, nullptr);
-  // Replacing rather than chaining would silently disable whatever the
-  // embedder installed, and the symptom would appear nowhere near Route B. The
-  // callback needs a live isolate, so that it runs the existing one first is
-  // by construction here; what is pinned is that one is still installed.
-  EXPECT_EQ(existing_calls, 0);
+  ASSERT_NE(settings.root_isolate_create_callback, nullptr);
+  EXPECT_EQ(existing_calls, 0) << "arming must not run it";
+
+  settings.root_isolate_create_callback(NeverReadIsolate());
+  EXPECT_EQ(existing_calls, 1);
+
+  // Route B's hook ran after it: it abstained, so success is now dropped.
+  shorebird::Updater::Instance().ReportLaunchSuccess();
+  EXPECT_EQ(mock_->launch_success_count(), 0);
+}
+
+// S3: an unreadable artifact abstains. No failure (a transient read error must
+// not tombstone a good patch) and no success (nothing was activated).
+TEST_F(ConfigureShorebirdTest, HookAbstainsWhenTheArtifactIsUnreadable) {
+  Settings settings;
+  InstallRouteBActivationHook(settings, "/nonexistent/dlc.vmcode");
+  settings.root_isolate_create_callback(NeverReadIsolate());
+  shorebird::Updater::Instance().ReportLaunchSuccess();
+  EXPECT_EQ(mock_->launch_failure_count(), 0);
+  EXPECT_EQ(mock_->launch_success_count(), 0);
+}
+
+TEST_F(ConfigureShorebirdTest,
+       ApplyPatchToSettingsAbstainsOnAnUnreadablePatch) {
+  Settings settings;
+  settings.application_library_paths = {"libapp.so"};
+  ApplyPatchToSettings("/nonexistent/dlc.vmcode", settings);
+  EXPECT_EQ(settings.root_isolate_create_callback, nullptr);
+  EXPECT_EQ(settings.application_library_paths,
+            std::vector<std::string>({"libapp.so"}));
+  shorebird::Updater::Instance().ReportLaunchSuccess();
+  shorebird::Updater::Instance().ReportLaunchFailure();
+  EXPECT_EQ(mock_->launch_failure_count(), 0);
+  EXPECT_EQ(mock_->launch_success_count(), 0);
+}
+
+// S2: a container the hook refuses reports FAILURE before Dart starts, so the
+// success Dart reports later is dropped and the patch is never promoted.
+TEST_F(ConfigureShorebirdTest, HookReportsFailureForARefusedContainer) {
+  fml::ScopedTemporaryDirectory dir;
+  // Right magic, version 0: refused as an unsupported version.
+  const std::string path = WriteFile(dir, "SBRBPTCH" + std::string(16, '\0'));
+  Settings settings;
+  InstallRouteBActivationHook(settings, path);
+  settings.root_isolate_create_callback(NeverReadIsolate());
+
+  EXPECT_EQ(mock_->launch_failure_count(), 1);
+  shorebird::Updater::Instance().ReportLaunchSuccess();
+  EXPECT_EQ(mock_->launch_success_count(), 0);
+}
+
+TEST(Shorebird, OnlyAFullyAppliedContainerIsAPatch) {
+  EXPECT_TRUE(RouteBFullyApplied(3, 3));
+  EXPECT_FALSE(RouteBFullyApplied(3, 2)) << "partial";
+  EXPECT_FALSE(RouteBFullyApplied(3, 0)) << "applied 0/N";
+  EXPECT_FALSE(RouteBFullyApplied(0, 0)) << "an empty container is inert";
+}
+
+TEST(Shorebird, AssertPoolOffsetSidecarIsOneInteger) {
+  int64_t v = -1;
+  EXPECT_TRUE(ParseAssertPoolOffset("0xd4a8\n", &v));
+  EXPECT_EQ(v, 0xd4a8);
+  EXPECT_TRUE(ParseAssertPoolOffset("1234", &v));
+  EXPECT_EQ(v, 1234);
+
+  v = -1;
+  EXPECT_FALSE(ParseAssertPoolOffset("0x1zzz", &v));
+  EXPECT_FALSE(ParseAssertPoolOffset("", &v));
+  EXPECT_FALSE(ParseAssertPoolOffset("nope", &v));
+  EXPECT_FALSE(ParseAssertPoolOffset("99999999999999999999999", &v));
+  EXPECT_EQ(v, -1) << "left untouched on failure";
 }
 
 // A Route B container is bytes plus a header, not a snapshot. Handed to the VM
@@ -335,9 +432,11 @@ TEST_F(ConfigureShorebirdTest, SecondEngineIsArmedEvenThoughItsInitFailed) {
 // Anything that is not a container is an ordinary code patch and takes the
 // platform's usual path (here, a desktop host: it replaces the library).
 TEST(ApplyPatchToSettings, LeavesANonContainerToThePlatformPath) {
+  fml::ScopedTemporaryDirectory dir;
+  const std::string path = WriteFile(dir, "an ordinary code patch");
   Settings settings;
   settings.application_library_paths = {"libapp.so"};
-  ApplyPatchToSettings("/nonexistent/dlc.vmcode", settings);
+  ApplyPatchToSettings(path, settings);
   EXPECT_EQ(settings.root_isolate_create_callback, nullptr);
 }
 #endif  // SHOREBIRD_ROUTE_B
