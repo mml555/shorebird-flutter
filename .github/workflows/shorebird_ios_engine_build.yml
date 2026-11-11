@@ -170,6 +170,14 @@ jobs:
         run: ./flutter/tools/gn --ios --runtime-mode release --dart-dynamic-modules --gn-args=shorebird_route_b=true --no-prebuilt-dart-sdk --no-rbe
         working-directory: engine/src
 
+      # The same check with Route B off, which is how every other shard and
+      # upstream build the engine. An include guarded by SHOREBIRD_ROUTE_B
+      # whose dependency exists only when the switch is on fails here, not
+      # in the on build above.
+      - name: ⚙️ Generate build files, Route B off (gn gen --check)
+        run: ./flutter/tools/gn --ios --runtime-mode release --no-prebuilt-dart-sdk --no-rbe --target-dir ios_release_route_b_off
+        working-directory: engine/src
+
       # Every non-test source set in those directories, as ninja targets.
       # set -o pipefail: a gn ls failure must fail the step, and an empty list
       # must not reach ninja, which would build the default (all) target.
