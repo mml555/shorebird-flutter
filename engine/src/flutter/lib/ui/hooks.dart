@@ -410,8 +410,52 @@ void _reportTimings(List<int> timings) {
 
 @pragma('vm:entry-point')
 void _drawFrame() {
+  // Route B (shorebird_route_b), second banking condition: the FIRST FRAMEWORK
+  // FRAME.
+  //
+  // Named narrowly on purpose. This is the framework PRODUCING a frame, not
+  // presentation, not pixels, and not a usable UI: rasterization happens
+  // afterwards on the raster thread. Do not restate it as "the app booted".
+  //
+  // It is here and not in `Shell` because `Shell::OnAnimatorDraw` posts to the
+  // raster task runner, so a reporter there would sit on another thread. Both
+  // reporters stay at the Dart/root-isolate startup boundary.
+  //
+  // The updater's latch makes this idempotent; `_launchFrameReported` only
+  // avoids an FFI call on every frame for the life of the process.
+  if (_reportsLaunch && !_launchFrameReported) {
+    _launchFrameReported = true;
+    _reportLaunchSuccess();
+  }
   PlatformDispatcher.instance._drawFrame();
 }
+
+bool _launchFrameReported = false;
+
+/// Whether this engine has dart:ui report the launch outcome to the Shorebird
+/// updater (a `shorebird_route_b` engine). A constant of the engine build,
+/// asked once. When false, `_runMain` and `_drawFrame` behave exactly as they
+/// do without Shorebird's Route B, because the Shell reports the launch.
+final bool _reportsLaunch = _reportsLaunchFromDart();
+
+@Native<Bool Function()>(
+  symbol: 'PlatformConfigurationNativeApi::ReportsLaunchFromDart',
+  isLeaf: true,
+)
+external bool _reportsLaunchFromDart();
+
+/// Both outcomes feed ONE atomic latch in `shorebird::Updater`, which already
+/// arbitrates success against failure: the first caller of either wins. That
+/// implements `success = earliest(main completion, first framework frame)`
+/// without new state, and it is also why a success banked at the first frame
+/// permanently suppresses a later `main` failure. That is the accepted safety
+/// trade-off, matching the updater's own asymmetry: the cheap error is to
+/// retry, the expensive one is to tombstone a working patch.
+@Native<Void Function()>(symbol: 'PlatformConfigurationNativeApi::ReportLaunchSuccess')
+external void _reportLaunchSuccess();
+
+@Native<Void Function()>(symbol: 'PlatformConfigurationNativeApi::ReportLaunchFailure')
+external void _reportLaunchFailure();
 
 @pragma('vm:entry-point')
 bool _onError(Object error, StackTrace? stackTrace) {
@@ -424,10 +468,59 @@ typedef _ListStringArgFunction = Object? Function(List<String> args);
 void _runMain(Function startMainIsolateFunction, Function userMainFunction, List<String> args) {
   // ignore: avoid_dynamic_calls
   startMainIsolateFunction(() {
-    if (userMainFunction is _ListStringArgFunction) {
-      userMainFunction(args);
+    if (!_reportsLaunch) {
+      if (userMainFunction is _ListStringArgFunction) {
+        userMainFunction(args);
+      } else {
+        userMainFunction(); // ignore: avoid_dynamic_calls
+      }
+      return;
+    }
+    // Route B, first banking condition: the completion of `main` ITSELF.
+    //
+    // `userMainFunction` is the handle the engine resolved for the app's
+    // `main`, so a wrapper here is bound to it by construction rather than by
+    // arrival order. Its return value was discarded twice above this point, so
+    // moving the seam one level up loses the async signal entirely.
+    //
+    // Nothing is caught that the application already handles: an app whose
+    // `main` wraps its work in `runZonedGuarded` returns normally here, which is
+    // correct. Reaching below this boundary would report on application
+    // business, not on whether the patch booted.
+    final Object? result;
+    try {
+      if (userMainFunction is _ListStringArgFunction) {
+        result = userMainFunction(args);
+      } else {
+        result = userMainFunction(); // ignore: avoid_dynamic_calls
+      }
+    } catch (_) {
+      // A synchronous throw from `main` is a Dart-phase BOOT failure. Report it
+      // and RETHROW unchanged: `PlatformDispatcher.onError` fires only for
+      // UNHANDLED errors, so swallowing this would fix crash-backout by
+      // deleting the application's own error reporting.
+      _reportLaunchFailure();
+      rethrow;
+    }
+
+    if (result is Future) {
+      // `main` is async, and the Future is the ONLY completion signal: a
+      // synchronous return from an `async` function means the body was merely
+      // STARTED. `onError` forwards rather than consumes, for the same reason
+      // the synchronous path rethrows.
+      result.then<void>(
+        (_) => _reportLaunchSuccess(),
+        onError: (Object error, StackTrace stackTrace) {
+          _reportLaunchFailure();
+          Zone.current.handleUncaughtError(error, stackTrace);
+        },
+      );
+      // NOT reported here. A `main` returning a Future that never completes is
+      // neither a success nor a failure, it is still running, and treating "not
+      // yet completed" as either would tombstone every slow boot. That shape
+      // banks via the first framework frame instead; see `_drawFrame`.
     } else {
-      userMainFunction(); // ignore: avoid_dynamic_calls
+      _reportLaunchSuccess();
     }
   }, null);
 }

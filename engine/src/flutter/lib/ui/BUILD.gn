@@ -193,6 +193,16 @@ source_set("ui") {
     "//third_party/zlib",
   ]
 
+  if (shorebird_route_b) {
+    # platform_configuration.cc reports the launch outcome from the Dart
+    # startup boundary. `:updater` is a leaf (its own deps are `//flutter/fml`,
+    # `:engine_callbacks` and the Rust lib), so the edge adds no cycle, and
+    # lib/ui already public_deps on other `//flutter/shell/common:*` targets.
+    # Caught by `gn --check`, not by compiling: adding an #include does not
+    # trigger a gn regen, so the dependency check can be stale.
+    deps += [ "//flutter/shell/common/shorebird:updater" ]
+  }
+
   if (impeller_supports_rendering) {
     sources += [
       "painting/display_list_deferred_image_gpu_impeller.cc",

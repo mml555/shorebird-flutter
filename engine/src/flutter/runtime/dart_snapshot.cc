@@ -156,7 +156,14 @@ static std::shared_ptr<const fml::Mapping> ResolveIsolateData(
   // guarded inside Updater to execute at most once per process — see the
   // Updater class comment for why this matters in add-to-app and
   // FlutterEngineGroup scenarios.
+#if SHOREBIRD_ROUTE_B
+  // NO LAUNCH REPORTING HERE in a Route B engine. Attribution belongs to
+  // Updater::PrepareNextBootPatch(), which records the patch it returns, and a
+  // start reported from snapshot resolution is a second reading of the
+  // candidate pointer that can disagree with it.
+#else
   shorebird::Updater::Instance().ReportLaunchStart();
+#endif
 #if SHOREBIRD_USE_INTERPRETER
   // Try loading from a Shorebird patch first.
   if (auto mapping = TryLoadFromPatch(settings.application_library_paths,

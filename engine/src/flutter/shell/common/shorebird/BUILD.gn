@@ -1,6 +1,7 @@
 import("//flutter/common/config.gni")
 import("//flutter/shell/common/shorebird/build_rust_updater.gni")
 import("//flutter/testing/testing.gni")
+import("//flutter/third_party/dart/runtime/runtime_args.gni")
 
 if (is_linux || is_win) {
   import("//build/config/sysroot.gni")
@@ -10,6 +11,16 @@ if (is_linux || is_win) {
 if (is_ios || is_mac) {
   import("//build/config/darwin/darwin_sdk.gni")
 }
+
+# Route B attaches bytecode through the Dart VM's dynamic-modules support. Built
+# without it, Dart_RouteBActivatePatchTraced answers "unsupported-build" for
+# every target. The updater would then have promoted a patch that never ran, so
+# refuse the combination at gen time. This lives here, not in config.gni,
+# because dart_dynamic_modules is declared by the Dart runtime's
+# runtime_args.gni, which config.gni does not import.
+assert(!shorebird_route_b || dart_dynamic_modules,
+       "shorebird_route_b requires dart_dynamic_modules = true " +
+           "(pass --dart-dynamic-modules to flutter/tools/gn).")
 
 source_set("snapshots_data_handle") {
   sources = [
@@ -221,6 +232,21 @@ source_set("updater") {
   }
 }
 
+# Route B patch containers. Split out from :shorebird so the container reader
+# can be unit-tested without the updater and the whole shell. Always built: it
+# is plain C++, and only shorebird.cc's use of it is behind shorebird_route_b.
+source_set("route_b_patch") {
+  sources = [
+    "route_b_patch.cc",
+    "route_b_patch.h",
+  ]
+
+  deps = [
+    "//flutter/fml",
+    "//flutter/third_party/rapidjson",
+  ]
+}
+
 source_set("shorebird") {
   sources = [
     "shorebird.cc",
@@ -228,6 +254,7 @@ source_set("shorebird") {
   ]
 
   deps = [
+    ":route_b_patch",
     ":snapshots_data_handle",
     ":updater",
     "//flutter/fml",
@@ -293,6 +320,7 @@ if (enable_unittests) {
 
     sources = [
       "engine_callbacks_unittests.cc",
+      "route_b_patch_unittests.cc",
       "shorebird_unittests.cc",
       "snapshots_data_handle_unittests.cc",
       "updater_unittests.cc",
@@ -304,6 +332,7 @@ if (enable_unittests) {
 
     deps = [
       ":engine_callbacks",
+      ":route_b_patch",
       ":shorebird",
       ":shorebird_fixtures",
       ":snapshots_data_handle",

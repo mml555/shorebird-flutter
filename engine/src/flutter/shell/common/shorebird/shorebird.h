@@ -69,11 +69,38 @@ bool LoadPatchOrBase(const std::string& patch_path,
 /// Points |settings| at |patch_path|, unless it is empty, so the Shell boots
 /// the patch. Used by Android and iOS, whose Shell resolves the AOT code from
 /// Settings::application_library_paths.
+///
+/// In a `shorebird_route_b` engine a Route B container is not a library: it
+/// is left out of the library paths and armed instead, see
+/// InstallRouteBActivationHook.
 void ApplyPatchToSettings(const std::string& patch_path, Settings& settings);
 
 /// Used for reading app_id from shorebird.yaml.
 /// Exposed for testing.
 std::string GetValueFromYaml(const std::string& yaml, const std::string& key);
+
+#if SHOREBIRD_ROUTE_B
+/// Parses the assert-pool-offset sidecar text: one integer, base 0, trailing
+/// whitespace allowed. False (and *out untouched) for anything else.
+/// Exposed for testing.
+bool ParseAssertPoolOffset(const std::string& raw, int64_t* out);
+
+/// Whether |live| of |total| targets means the container took full effect.
+/// Exposed for testing.
+bool RouteBFullyApplied(size_t total, size_t live);
+
+/// Arms Route B activation on |settings|: installs a
+/// root_isolate_create_callback that applies the container at |path| once the
+/// root isolate exists, after its libraries load and before main runs.
+///
+/// Inert when |path| is empty, which is nearly every launch. CHAINS an existing
+/// callback rather than replacing it. The container is not read here: arming
+/// happens before the engine starts, so a missing file still arms and is
+/// refused (and reported) at activation time.
+///
+/// Exposed for testing.
+void InstallRouteBActivationHook(Settings& settings, const std::string& path);
+#endif  // SHOREBIRD_ROUTE_B
 
 }  // namespace flutter
 

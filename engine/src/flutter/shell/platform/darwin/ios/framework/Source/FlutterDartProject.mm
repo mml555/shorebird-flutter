@@ -51,7 +51,17 @@ NSNumber* _Nullable FLTEnableWideGamutFromBundle(NSBundle* _Nullable bundle,
   return nsEnableWideGamut;
 }
 
-#if !FLUTTER_JIT_RUNTIME && SHOREBIRD_USE_INTERPRETER
+// Whether this iOS engine can run a patch at all: with Shorebird's interpreter
+// (shorebird_use_interpreter) or as a Route B engine (shorebird_route_b). Only
+// such an engine starts the updater; otherwise it would download patches only
+// for them to be discarded. SHOREBIRD_USE_INTERPRETER stays 0 for Route B.
+#if SHOREBIRD_USE_INTERPRETER || SHOREBIRD_ROUTE_B
+#define SHOREBIRD_IOS_CAN_RUN_PATCHES 1
+#else
+#define SHOREBIRD_IOS_CAN_RUN_PATCHES 0
+#endif
+
+#if !FLUTTER_JIT_RUNTIME && SHOREBIRD_IOS_CAN_RUN_PATCHES
 // A launch before the device's first unlock (a push, a background fetch)
 // can't read the updater's files, which iOS protects until then, so it runs
 // the base release and can't report why. Tell the updater once the files
@@ -78,7 +88,7 @@ static void ObserveShorebirdProtectedData() {
                     usingBlock:notify];
   });
 }
-#endif  // !FLUTTER_JIT_RUNTIME && SHOREBIRD_USE_INTERPRETER
+#endif  // !FLUTTER_JIT_RUNTIME && SHOREBIRD_IOS_CAN_RUN_PATCHES
 
 flutter::Settings FLTDefaultSettingsForBundle(NSBundle* bundle, NSProcessInfo* processInfoOrNil) {
   auto command_line = flutter::CommandLineFromNSProcessInfo(processInfoOrNil);
@@ -206,11 +216,16 @@ flutter::Settings FLTDefaultSettingsForBundle(NSBundle* bundle, NSProcessInfo* p
   // skips it outside FLUTTER_RELEASE; iOS keeps it in profile.)
 #if FLUTTER_JIT_RUNTIME
   NSLog(@"Debug build, not starting the Shorebird updater.");
-#elif !SHOREBIRD_USE_INTERPRETER
-  // SELFHOST: an iOS engine built without the interpreter (see
-  // shorebird_use_interpreter in common/config.gni) cannot run a patch, so
-  // don't start the updater: it would download patches only for them to be
-  // discarded. The app runs as it does with no shorebird.yaml.
+#elif !SHOREBIRD_IOS_CAN_RUN_PATCHES
+  // SELFHOST: an iOS engine built with neither the interpreter nor Route B (see
+  // shorebird_use_interpreter and shorebird_route_b in common/config.gni)
+  // cannot run a patch, so don't start the updater: it would download patches
+  // only for them to be discarded. The app runs as it does with no
+  // shorebird.yaml.
+  //
+  // This branch, and so this string, is compiled out of a shorebird_route_b
+  // engine: a Route B engine does take patches, and the CLI must not read it
+  // as declining.
   //
   // Load-bearing text: the Shorebird CLI (isRouteBEngine in
   // packages/shorebird_cli/lib/src/route_b.dart) searches the iOS release

@@ -17,6 +17,9 @@ namespace shorebird {
 // Static member definitions
 std::unique_ptr<Updater> Updater::instance_;
 std::mutex Updater::instance_mutex_;
+std::mutex Updater::prepare_mutex_;
+bool Updater::boot_prepared_ = false;
+std::string Updater::prepared_path_;
 std::atomic<bool> Updater::launch_started_{false};
 std::atomic<bool> Updater::launch_completed_{false};
 std::atomic<bool> Updater::initialized_{false};
@@ -45,6 +48,11 @@ void Updater::ResetInstanceForTesting() {
 }
 
 void Updater::ResetLaunchStateForTesting() {
+  {
+    std::lock_guard<std::mutex> lock(prepare_mutex_);
+    boot_prepared_ = false;
+    prepared_path_.clear();
+  }
   launch_started_.store(false);
   launch_completed_.store(false);
   initialized_.store(false);
@@ -63,6 +71,27 @@ bool Updater::Init(const AppConfig& config) {
 
 bool Updater::IsInitialized() {
   return initialized_.load();
+}
+
+std::string Updater::PrepareNextBootPatch() {
+  // Only the first engine in a process prepares a boot. A later engine gets
+  // the same answer: not a fresh preparation (which would re-attribute the
+  // launch to whatever has been downloaded since) and not an empty string
+  // (which would silently downgrade it to the base release).
+  std::lock_guard<std::mutex> lock(prepare_mutex_);
+  if (boot_prepared_) {
+    return prepared_path_;
+  }
+  const std::string path = DoPrepareNextBootPatch();
+  // Only an initialised updater's answer is an answer. Without one the call
+  // fails and returns "boot the base release", and caching that would pin the
+  // whole process to the base release even if a later engine initialises.
+  if (!IsInitialized()) {
+    return path;
+  }
+  prepared_path_ = path;
+  boot_prepared_ = true;
+  return prepared_path_;
 }
 
 void Updater::ReportLaunchStart() {
@@ -88,6 +117,16 @@ void Updater::ReportLaunchSuccess() {
   // from TryLoadFromPatch, and the base-code boot reaching here is the launch
   // that most needs a replacement patch. See the class comment.
   MaybeStartUpdateThread();
+}
+
+void Updater::AbstainFromLaunchReport() {
+  // Claims the same once-per-process latch a report would, but forwards
+  // nothing: no success and no failure. A later ReportLaunchSuccess (from Dart)
+  // or ReportLaunchFailure is then a no-op, so this process neither credits nor
+  // explicitly fails a patch whose state it could not judge. The boot attempt
+  // PrepareNextBootPatch recorded stays unconfirmed and counts toward the
+  // updater's boot-attempt threshold; see AbstainFromLaunchReport in updater.h.
+  launch_completed_.store(true);
 }
 
 void Updater::MaybeStartUpdateThread() {
@@ -180,6 +219,19 @@ std::string RealUpdater::NextBootPatchPath() {
   return path;
 }
 
+std::string RealUpdater::DoPrepareNextBootPatch() {
+  // NULL means "boot the base release". That covers both a genuine absence of
+  // any usable patch and an internal updater error, which is the fail-closed
+  // direction: never hand the VM an artifact the updater could not vouch for.
+  char* c_path = shorebird_prepare_next_boot_patch();
+  if (c_path == nullptr) {
+    return "";
+  }
+  std::string path(c_path);
+  shorebird_free_string(c_path);
+  return path;
+}
+
 void RealUpdater::DoReportLaunchStart() {
   shorebird_report_launch_start();
 }
@@ -226,6 +278,12 @@ std::string MockUpdater::NextBootPatchPath() {
   return next_boot_patch_path_;
 }
 
+std::string MockUpdater::DoPrepareNextBootPatch() {
+  prepare_count_++;
+  call_log_.push_back("PrepareNextBootPatch");
+  return next_boot_patch_path_;
+}
+
 void MockUpdater::DoReportLaunchStart() {
   launch_start_count_++;
   call_log_.push_back("ReportLaunchStart");
@@ -254,6 +312,7 @@ void MockUpdater::StartUpdateThread() {
 void MockUpdater::Reset() {
   init_count_ = 0;
   validate_count_ = 0;
+  prepare_count_ = 0;
   launch_start_count_ = 0;
   launch_success_count_ = 0;
   launch_failure_count_ = 0;

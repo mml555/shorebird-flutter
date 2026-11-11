@@ -1,9 +1,14 @@
 
 #include "flutter/shell/common/shorebird/shorebird.h"
 
+#include <algorithm>
+#include <cerrno>
 #include <cstddef>
+#include <cstdlib>
 #include <memory>
 #include <optional>
+#include <sstream>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -18,12 +23,15 @@
 #include "flutter/runtime/dart_snapshot.h"
 #include "flutter/runtime/dart_vm.h"
 #include "flutter/shell/common/shell.h"
+#include "flutter/shell/common/shorebird/route_b_patch.h"
 #include "flutter/shell/common/shorebird/snapshots_data_handle.h"
 #include "flutter/shell/common/shorebird/updater.h"
 #include "flutter/shell/common/switches.h"
 #include "fml/logging.h"
 #include "shell/platform/embedder/embedder.h"
+#include "third_party/dart/runtime/include/dart_api.h"
 #include "third_party/dart/runtime/include/dart_native_api.h"
+#include "third_party/dart/runtime/include/dart_route_b_trace.h"
 #include "third_party/dart/runtime/include/dart_tools_api.h"
 
 // Namespaced to avoid Google style warnings.
@@ -162,6 +170,368 @@ std::string GetValueFromYaml(const std::string& yaml, const std::string& key) {
   return "";
 }
 
+#if SHOREBIRD_ROUTE_B
+// The supplied pool offset of the negative control; see the call site.
+constexpr int64_t kDefaultAssertPoolOffset = 0xd4a8;
+
+// The pre-main hook's outcome, written next to the artifact.
+//
+// WHY A FILE. The taxonomy exists so a refusal names its own cause, and on this
+// rig that is worthless without a channel: no engine log line of ANY kind
+// reaches idevicesyslog for a --noninteractive launch, Flutter's own included,
+// because stderr is not routed there. The first 4b device run refused and left
+// nothing to read -- exactly the failure the taxonomy was built to prevent, one
+// level up.
+//
+// Written beside the installed artifact, inside the app's own container, so
+// `ios-deploy --download` can retrieve it. Best-effort: a diagnostic that can
+// fail the boot it is diagnosing is worse than no diagnostic.
+void RouteBReport(const std::string& artifact_path, const std::string& line) {
+  FML_LOG(ERROR) << "ROUTEB: " << line;
+  const std::string report_path = artifact_path + ".routeb";
+  FILE* f = fopen(report_path.c_str(), "a");
+  if (f == nullptr) {
+    return;
+  }
+  fprintf(f, "%s\n", line.c_str());
+  fclose(f);
+}
+
+// The post-attach trace, in its OWN file.
+//
+// Deliberately not appended to `.routeb`. That file carries byte-for-byte
+// committed evidence (`selfhost/engine/route_b/evidence/`) and ABSENCE
+// semantics other probes read as "never armed", so adding lines to it would put
+// this diagnostic in tension with both. A sibling path is discovered the same
+// way by `ios-deploy --download` and costs nothing.
+//
+// No `FML_LOG` mirror either: device logs are not reliably capturable, which is
+// the whole reason this is a file, and duplicating it there invites reading the
+// log instead of the record.
+void RouteBTraceWrite(const std::string& artifact_path,
+                      const std::string& line) {
+  const std::string trace_path = artifact_path + ".routeb.trace";
+  FILE* f = fopen(trace_path.c_str(), "a");
+  if (f == nullptr) {
+    return;
+  }
+  fprintf(f, "%s\n", line.c_str());
+  fclose(f);
+}
+
+// Pure, so it is unit-testable on host with a hand-filled struct — no device,
+// no engine, no patch.
+//
+// EVERY FIELD IS PRINTED, including the ones that agree with expectation. The
+// lesson of `applied 1/1` is that a summary hides the thing you did not think
+// to ask about, so this records values and leaves the conclusion to the reader.
+std::string FormatRouteBTrace(const Dart_RouteBTrace& t,
+                              const std::string& library,
+                              const std::string& selector,
+                              size_t payload_length) {
+  std::ostringstream o;
+  // v=5 added the derived target->pool fields; v=6 removes the raw pointers.
+  // The version is bumped rather than the fields quietly changed, because a
+  // reader that assumes the old field set would take a field's absence for a
+  // measurement.
+  o << "rbtrace v=6"
+    << " lib=" << library << " sel=" << selector << " paylen=" << payload_length
+    << " rc=" << t.result << " attach_entered=" << t.attach_entered
+    << " attach_returned=" << t.attach_returned
+    << " bc_pre=" << t.has_bytecode_pre << " bc_post=" << t.has_bytecode_post
+    << " interp_pre=" << t.is_interpreted_pre
+    << " interp_post=" << t.is_interpreted_post
+    << " bc_size=" << t.bytecode_size << " code_pre_size=" << t.code_pre_size
+    << " uep_post_is_interpret_call=" << t.entry_point_post_is_interpret_call
+    << " caller_scan_status=" << t.caller_scan_status
+    << " pool_status=" << t.pool_status << " pool_index=" << t.pool_index
+    << " pool_length=" << t.pool_length
+    << " pool_entry_is_function=" << t.pool_entry_is_function
+    << " pool_entry_equals_target=" << t.pool_entry_equals_target
+    << " caller_resolved=" << t.caller_resolved
+    << " caller_pool_fns=" << t.caller_pool_functions << " caller_pool_matches="
+    << t.caller_pool_matches_target
+    // DERIVED target->pool identity. `tpool_matches` is authoritative: index
+    // and offset mean an identity ONLY at tpool_status=4 (UNIQUE). At 5
+    // (AMBIGUOUS) they are the FIRST of several and `tpool_index2` is the next,
+    // so the ambiguity is in the record instead of being resolved by whoever
+    // reads it.
+    << " tpool_status=" << t.target_pool_status
+    << " tpool_matches=" << t.target_pool_matches
+    << " tpool_index=" << t.target_pool_index
+    << " tpool_index2=" << t.target_pool_index_second
+    << " tpool_scanned=" << t.target_pool_scanned;
+  // NO RAW VM POINTERS. v5 also printed Function/Code/pool-entry addresses
+  // (`fn=`, `code_*`, `fn_ep_*`, `interpret_call_ep`, `pool_entry_ptr`...).
+  // This file sits in the app's own container, which device backups include,
+  // and an address there is a free ASLR leak for whoever reads the backup. What
+  // they were for -- telling the Function-level entry point from the
+  // Code-level one -- is answered by the booleans above
+  // (`uep_post_is_interpret_call`, `pool_entry_equals_target`), which say
+  // whether the addresses AGREED, and agreement is the measurement. Offsets are
+  // positions in a pool, not addresses, and stay.
+  o << std::hex << std::showbase << " pool_offset=" << t.pool_offset
+    << " tpool_offset=" << t.target_pool_offset;
+  return o.str();
+}
+
+// Parses the assert-pool-offset sidecar. Pure, so the decision is testable
+// without a VM. The whole text must be one integer (base 0: `0x...` hex, bare
+// digits decimal, surrounding whitespace allowed): `0x1zzz` is not 0x1. Returns
+// false, leaving *out untouched, when it is not.
+bool ParseAssertPoolOffset(const std::string& raw, int64_t* out) {
+  const char* begin = raw.c_str();
+  char* end = nullptr;
+  errno = 0;
+  const long long v = ::strtoll(begin, &end, 0);
+  if (end == begin || errno == ERANGE) {
+    return false;
+  }
+  while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') {
+    end++;
+  }
+  if (*end != '\0') {
+    return false;
+  }
+  *out = static_cast<int64_t>(v);
+  return true;
+}
+
+// Whether a container took full effect. `live` counts targets that are running
+// the patch: freshly attached, or already interpreted (a spawned engine's
+// isolate group, or a second hook run, finds the target live already and the
+// VM says so rather than attaching twice). Anything short of every target is
+// NOT a patch: it is a partly patched app the VM cannot roll back.
+bool RouteBFullyApplied(size_t total, size_t live) {
+  return total > 0 && live == total;
+}
+
+// Route B (selfhost), SEAM 6: activate a patch after the root isolate exists
+// and before main runs.
+//
+// The lifecycle keeps deciding WHICH patch is active; the engine only decides
+// HOW a Route B patch becomes live. That ownership split is why this is a
+// separate hook armed from ApplyPatchToSettings rather than more code inside
+// ConfigureShorebird, and it is why the path handed in here is the one
+// PrepareNextBootPatch() already chose.
+//
+// TIMING. root_isolate_create_callback fires at dart_isolate.cc:163, inside a
+// tonic::DartState::Scope: after the isolate exists and its libraries are
+// loaded, and before RunFromLibrary/InvokeMainEntrypoint at :174. Route B needs
+// live Function objects so it cannot run earlier, and must precede user Dart so
+// it cannot run later. That one-line window is the whole seam.
+//
+// FAIL CLOSED. Every refusal leaves the program pristine and returns, so the
+// app boots on unpatched AOT. A Route B patch that cannot be applied must never
+// be the difference between running and not running.
+//
+// Existing callback is CHAINED, never replaced: root_isolate_create_callback is
+// a general extension point (fuchsia and the embedder API both set it), and
+// silently consuming another subsystem's hook would be a nasty regression to
+// debug.
+void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
+  if (path.empty()) {
+    // Inert. The overwhelmingly common case is no Route B patch at all, and it
+    // must cost nothing.
+    return;
+  }
+  auto existing = settings.root_isolate_create_callback;
+
+  settings.root_isolate_create_callback = [existing,
+                                           path](const DartIsolate& isolate) {
+    if (existing) {
+      existing(isolate);
+    }
+    RouteBReport(path, "hook entered");
+
+    // THE OUTCOME RULE. Every outcome other than "every target applied"
+    // reports launch FAILURE here, before Dart starts: refused (malformed,
+    // unsupported version, corrupt), wrong release, no release identity,
+    // applied 0/N, and partial N/M. Failure takes the Updater's
+    // once-per-process latch, so the success Dart reports later (main
+    // returning, first frame) is dropped. Without this the app boots on the
+    // previous code, or half-patched, the success is credited to the new patch,
+    // and the updater promotes it and deletes the last known-good one. A patch
+    // that did not fully take effect must never be promoted over the previous
+    // good one.
+    //
+    // The one exception is an unreadable artifact, which abstains (see below).
+    auto ReportRefusal = [] {
+      shorebird::Updater::Instance().ReportLaunchFailure();
+    };
+
+    auto mapping = fml::FileMapping::CreateReadOnly(path);
+    if (!mapping || mapping->GetSize() == 0) {
+      // ABSTAIN, do not fail. Being unable to read the artifact is not
+      // evidence about the patch (EMFILE, protected data not yet available),
+      // so this process neither activates it nor reports on it. However,
+      // the boot attempt PrepareNextBootPatch already recorded stays
+      // unconfirmed, so the updater's boot-attempt threshold
+      // (BOOT_FAILURE_THRESHOLD = 2) still applies: a patch whose artifact
+      // stays unreadable is tombstoned after two such boots, which is right for
+      // an artifact that can never run, while one transient failure is retried.
+      RouteBReport(path, "REFUSED (unreadable)");
+      shorebird::Updater::Instance().AbstainFromLaunchReport();
+      return;
+    }
+
+    route_b::Container container;
+    std::string error;
+    const auto status = route_b::Parse(mapping->GetMapping(),
+                                       mapping->GetSize(), &container, &error);
+    if (status != route_b::ContainerStatus::kOk) {
+      RouteBReport(path, std::string("REFUSED (") +
+                             route_b::StatusName(status) + "): " + error);
+      ReportRefusal();
+      return;
+    }
+    RouteBReport(path,
+                 "parsed, targets=" + std::to_string(container.targets.size()) +
+                     ", built-for=" + container.release_build_id);
+
+    // RELEASE IDENTITY BEFORE TARGET RESOLUTION. Patch bytecode is compiled
+    // against one release's kernel, so applying it elsewhere is undefined
+    // rather than merely unsupported. Checking it here means a stale
+    // payload says "wrong release" instead of degrading into a target or
+    // attach failure three steps later -- which is the single most
+    // expensive diagnostic confusion this project has had.
+    char* running = Dart_RouteBReleaseBuildId();
+    if (running == nullptr) {
+      // No identity is not "any identity". Refuse.
+      RouteBReport(path,
+                   "REFUSED (no-release-identity): this snapshot carries "
+                   "no build ID");
+      ReportRefusal();
+      return;
+    }
+    const std::string running_id(running);
+    ::free(running);
+    RouteBReport(path, "running=" + running_id);
+    if (running_id != container.release_build_id) {
+      RouteBReport(path, std::string("REFUSED (") +
+                             route_b::StatusName(
+                                 route_b::ContainerStatus::kWrongRelease) +
+                             "): built for " + container.release_build_id +
+                             ", running " + running_id);
+      ReportRefusal();
+      return;
+    }
+
+    // THE NEGATIVE CONTROL'S SUPPLY SIDE, and the only reason a non-zero
+    // offset reaches the runtime. The runtime gates its assertion path on
+    // `pool_offset != 0`, so without a supplied offset that independent
+    // instrument is unreachable and a green `tpool_status` would be
+    // compile evidence wearing a measurement's clothes.
+    //
+    // The default is the historical 0xd4a8 because that is the value the
+    // control is specified against. It is a DEFAULT, not a special case: it
+    // applies to every target rather than one selector, nothing derives an
+    // identity from it (the derived `tpool_*` scan is the producer), and an
+    // operator overrides it per run by dropping a value beside the active
+    // patch, with no rebuild. Whether 0xd4a8 lands in range in a release
+    // that does not exist yet is not knowable in advance.
+    //
+    // DIAGNOSTIC. Remove with the investigation: removing it costs only
+    // this block.
+    int64_t assert_pool_offset = kDefaultAssertPoolOffset;
+    {
+      const std::string sidecar = path + ".assert_pool_offset";
+      auto sc = fml::FileMapping::CreateReadOnly(sidecar);
+      if (sc && sc->GetSize() > 0) {
+        const size_t kMaxSidecar = 64;  // an integer, not a payload
+        const std::string raw(reinterpret_cast<const char*>(sc->GetMapping()),
+                              std::min(sc->GetSize(), kMaxSidecar));
+        // A PARSE FAILURE IS REPORTED, NEVER ABSORBED. The default stands
+        // so the control still runs, and `pool_offset=` in the trace
+        // records what was ACTUALLY supplied.
+        if (!ParseAssertPoolOffset(raw, &assert_pool_offset)) {
+          RouteBReport(path,
+                       "assert-pool-offset sidecar UNPARSEABLE, keeping "
+                       "default 0xd4a8");
+        }
+      }
+    }
+    {
+      std::ostringstream ao;
+      ao << "assert-pool-offset supplied=" << std::hex << std::showbase
+         << assert_pool_offset;
+      RouteBReport(path, ao.str());
+    }
+
+    int applied = 0;
+    size_t live = 0;
+    for (const auto& target : container.targets) {
+      Dart_RouteBTrace trace;
+      // The target's pool location is DERIVED inside
+      // Dart_RouteBActivatePatchTraced from the target's own identity, so
+      // it needs nothing supplied. What is passed as `pool_offset` is the
+      // ASSERTION's subject ("does this slot hold the target?"), answered
+      // independently of the derived scan and reported beside it in the
+      // same trace. The two instruments are wired to disagree, which is
+      // what makes a disagreement evidence.
+      const int32_t result = Dart_RouteBActivatePatchTraced(
+          target.bytecode, static_cast<intptr_t>(target.length),
+          target.library.c_str(), target.selector.c_str(), &trace,
+          /*caller_name=*/nullptr, assert_pool_offset);
+      // FOR EVERY TARGET, SUCCESS INCLUDED. The success path below `continue`s,
+      // so until now a target that "worked" contributed nothing but the
+      // applied N/N tally — which is exactly how `applied 1/1` came to be the
+      // entire story for four device runs.
+      RouteBTraceWrite(path, FormatRouteBTrace(trace, target.library,
+                                               target.selector, target.length));
+      if (result == Dart_RouteB_Ok) {
+        applied++;
+        live++;
+        continue;
+      }
+      if (result == Dart_RouteB_AlreadyInterpreted) {
+        // Live, not failed: see RouteBFullyApplied.
+        live++;
+      }
+      // Named, not numbered. A code nobody can read is a bool with extra
+      // steps.
+      const char* reason = "unknown";
+      switch (result) {
+        case Dart_RouteB_NoIsolate:
+          reason = "no-isolate";
+          break;
+        case Dart_RouteB_EmptyPayload:
+          reason = "empty-payload";
+          break;
+        case Dart_RouteB_InvalidBytecode:
+          reason = "invalid-bytecode";
+          break;
+        case Dart_RouteB_TargetMissing:
+          reason = "target-missing";
+          break;
+        case Dart_RouteB_AlreadyInterpreted:
+          reason = "already-interpreted";
+          break;
+        case Dart_RouteB_AttachFailed:
+          reason = "attach-failed";
+          break;
+        case Dart_RouteB_Unsupported:
+          reason = "unsupported-build";
+          break;
+        case Dart_RouteB_OutOfMemory:
+          reason = "out-of-memory";
+          break;
+        default:
+          break;
+      }
+      RouteBReport(path, "target " + target.selector + " in " + target.library +
+                             " REFUSED (" + reason + ")");
+    }
+    RouteBReport(path, "applied " + std::to_string(applied) + "/" +
+                           std::to_string(container.targets.size()) +
+                           " targets, entering main");
+    if (!RouteBFullyApplied(container.targets.size(), live)) {
+      ReportRefusal();
+    }
+  };
+}
+#endif  // SHOREBIRD_ROUTE_B
+
 bool ConfigureShorebird(const ShorebirdConfigArgs& args,
                         std::string& patch_path) {
   patch_path.clear();
@@ -243,8 +613,19 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
                      shorebird::Updater::IsInitialized();
 
   FML_LOG(INFO) << "Checking for active patch";
+#if SHOREBIRD_ROUTE_B
+  // ONE call: validate, select, and record the selection as the booting patch.
+  // Splitting these apart is what let a rejected patch stay credited as the
+  // booting patch and get the last-known-good one deleted. A second engine
+  // gets the first call's path, so every engine in the process boots the same
+  // patch. Nothing below, and nothing in snapshot resolution, reports a launch
+  // start: the preparation already did.
+  std::string active_path =
+      shorebird::Updater::Instance().PrepareNextBootPatch();
+#else
   shorebird::Updater::Instance().ValidateNextBootPatch();
   std::string active_path = shorebird::Updater::Instance().NextBootPatchPath();
+#endif
   if (!active_path.empty()) {
     patch_path = active_path;
     FML_LOG(INFO) << "Shorebird updater: patch path: " << patch_path;
@@ -278,7 +659,10 @@ bool LoadPatchOrBase(const std::string& patch_path,
   // success report does not record the base-code boot as the patch's. This
   // is the same sequence TryLoadFromPatch runs with the interpreter, and
   // ApplyPatchToSettings runs on iOS without it.
+#if !SHOREBIRD_ROUTE_B
+  // A Route B engine's PrepareNextBootPatch already recorded the start.
   shorebird::Updater::Instance().ReportLaunchStart();
+#endif
   shorebird::Updater::Instance().ReportLaunchFailure();
   return load(base_path);
 }
@@ -287,6 +671,42 @@ void ApplyPatchToSettings(const std::string& patch_path, Settings& settings) {
   if (patch_path.empty()) {
     return;
   }
+#if SHOREBIRD_ROUTE_B
+  // WHAT THIS ARTIFACT IS is decided by its BYTES, before anything touches
+  // application_library_paths. The updater installs every code artifact as
+  // `patches/{N}/dlc.vmcode` whatever is inside it, so the name says nothing.
+  // Handing a Route B container to the VM as the app's library is not a
+  // degraded patch, it is a failure to boot: it is bytecode plus a header, not
+  // a snapshot, and is applied by the pre-main hook once a root isolate exists.
+  //
+  // This is also where the hook gets armed on every engine in the process,
+  // including a second one. ConfigureShorebird's result is deliberately not
+  // consulted: a second call's Init fails by design ("Updater already
+  // initialized"), and the arming used to sit behind that early return, so
+  // engine two ran the original AOT code while engine one ran the patch. A
+  // genuine init failure yields no patch path, and an empty path never gets
+  // here.
+  const auto sniffed = route_b::SniffFile(patch_path);
+  if (sniffed == route_b::ContainerStatus::kUnreadable) {
+    // ABSTAIN. A read failure says nothing about the patch: this process does
+    // not arm it, and reports neither success nor failure for it, so one
+    // transient EMFILE cannot tombstone a good patch or credit one never run.
+    // However, the boot attempt PrepareNextBootPatch already recorded stays
+    // unconfirmed, so the updater's boot-attempt threshold
+    // (BOOT_FAILURE_THRESHOLD = 2) still applies: a patch whose artifact stays
+    // unreadable is tombstoned after two such boots, which is right for an
+    // artifact that can never run, while one transient failure is retried.
+    FML_LOG(ERROR) << "Shorebird: cannot read the active patch " << patch_path
+                   << "; not activating it and not reporting on it";
+    shorebird::Updater::Instance().AbstainFromLaunchReport();
+    return;
+  }
+  if (sniffed == route_b::ContainerStatus::kOk) {
+    FML_LOG(INFO) << "Shorebird updater: active patch is a Route B container";
+    InstallRouteBActivationHook(settings, patch_path);
+    return;
+  }
+#endif  // SHOREBIRD_ROUTE_B
 #if SHOREBIRD_USE_INTERPRETER
   // Front-insert rather than clear. A linked patch carries only the code it
   // rewrote, and everything it linked against still executes out of the base
@@ -295,6 +715,19 @@ void ApplyPatchToSettings(const std::string& patch_path, Settings& settings) {
   // still wins the lookup without evicting the base.
   settings.application_library_paths.insert(
       settings.application_library_paths.begin(), patch_path);
+#elif FML_OS_IOS && SHOREBIRD_ROUTE_B
+  // A Route B engine runs Route B containers only. Anything else is a linked
+  // .vmcode file, which swapped in for the app library would leave the VM with
+  // no snapshot and crash at launch. Keep the release's code and mark the
+  // patch failed, as LoadPatchOrBase does, so the updater stops booting it.
+  //
+  // Deliberately NOT the "cannot run iOS patches" wording of the branch below:
+  // the Shorebird CLI reads that text in the binary as this engine declining
+  // iOS patches, and this engine does not.
+  FML_LOG(ERROR) << "Shorebird: ignoring a patch that is not a Route B "
+                    "container, running the release's code instead of "
+                 << patch_path;
+  shorebird::Updater::Instance().ReportLaunchFailure();
 #elif FML_OS_IOS
   // SELFHOST: an iOS engine built without the interpreter (see
   // shorebird_use_interpreter in common/config.gni) cannot run a patch. The

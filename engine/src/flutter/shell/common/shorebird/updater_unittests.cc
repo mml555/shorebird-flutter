@@ -5,6 +5,9 @@
 #include "flutter/shell/common/shorebird/updater.h"
 
 #include <algorithm>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include "gtest/gtest.h"
 
@@ -348,6 +351,118 @@ TEST_F(UpdaterTest, ResetLaunchStateForgetsInit) {
   Updater::Instance().ReportLaunchSuccess();
 
   EXPECT_EQ(mock_->start_update_thread_count(), 0);
+}
+
+// Route B's boot preparation reaches the updater once per process...
+TEST_F(UpdaterTest, PrepareNextBootPatchOnlyPreparesOnce) {
+  Updater::Instance().Init(AppConfig());
+  mock_->set_next_boot_patch_path("/patches/1/dlc.vmcode");
+  EXPECT_EQ(mock_->prepare_count(), 0);
+
+  EXPECT_EQ(Updater::Instance().PrepareNextBootPatch(),
+            "/patches/1/dlc.vmcode");
+  EXPECT_EQ(mock_->prepare_count(), 1);
+
+  Updater::Instance().PrepareNextBootPatch();
+  EXPECT_EQ(mock_->prepare_count(), 1);
+}
+
+// ...and a second caller gets the FIRST call's answer. An empty string would
+// silently downgrade a second engine to the base release.
+TEST_F(UpdaterTest, SecondPrepareReturnsTheSamePathWithoutRepreparing) {
+  Updater::Instance().Init(AppConfig());
+  mock_->set_next_boot_patch_path("/patches/1/dlc.vmcode");
+  const std::string first = Updater::Instance().PrepareNextBootPatch();
+
+  // A background update lands, and the updater would now name patch 3.
+  mock_->set_next_boot_patch_path("/patches/3/dlc.vmcode");
+
+  const std::string second = Updater::Instance().PrepareNextBootPatch();
+  EXPECT_EQ(second, first);
+  EXPECT_EQ(second, "/patches/1/dlc.vmcode");
+  EXPECT_EQ(mock_->prepare_count(), 1)
+      << "a later engine must not re-attribute the launch to a newer patch";
+}
+
+// The base release is a real answer, not "not yet prepared".
+TEST_F(UpdaterTest, EmptyPathIsStillAPreparedResult) {
+  Updater::Instance().Init(AppConfig());
+  mock_->set_next_boot_patch_path("");
+  EXPECT_EQ(Updater::Instance().PrepareNextBootPatch(), "");
+  EXPECT_EQ(Updater::Instance().PrepareNextBootPatch(), "");
+  EXPECT_EQ(mock_->prepare_count(), 1);
+}
+
+// Concurrent engine creation yields one preparation and one answer.
+TEST_F(UpdaterTest, ConcurrentPrepareYieldsOnePreparationAndOneAnswer) {
+  Updater::Instance().Init(AppConfig());
+  mock_->set_next_boot_patch_path("/patches/1/dlc.vmcode");
+  constexpr int kThreads = 8;
+  std::vector<std::string> results(kThreads);
+  std::vector<std::thread> threads;
+  threads.reserve(kThreads);
+  for (int i = 0; i < kThreads; i++) {
+    threads.emplace_back([&results, i] {
+      results[i] = Updater::Instance().PrepareNextBootPatch();
+    });
+  }
+  for (auto& t : threads) {
+    t.join();
+  }
+  EXPECT_EQ(mock_->prepare_count(), 1);
+  for (int i = 0; i < kThreads; i++) {
+    EXPECT_EQ(results[i], "/patches/1/dlc.vmcode") << "thread " << i;
+  }
+}
+
+TEST_F(UpdaterTest, ResetLaunchStateForgetsThePreparedBoot) {
+  Updater::Instance().Init(AppConfig());
+  mock_->set_next_boot_patch_path("/patches/1/dlc.vmcode");
+  Updater::Instance().PrepareNextBootPatch();
+  Updater::ResetLaunchStateForTesting();
+
+  mock_->set_next_boot_patch_path("/patches/2/dlc.vmcode");
+  EXPECT_EQ(Updater::Instance().PrepareNextBootPatch(),
+            "/patches/2/dlc.vmcode");
+  EXPECT_EQ(mock_->prepare_count(), 2);
+}
+
+// A preparation made before the updater was initialised is a failed call, not
+// an answer. Caching its "base release" would pin the process to the base even
+// if a later engine initialises successfully.
+TEST_F(UpdaterTest, PrepareBeforeInitIsNotCached) {
+  mock_->set_next_boot_patch_path("");
+  EXPECT_EQ(Updater::Instance().PrepareNextBootPatch(), "");
+  EXPECT_EQ(mock_->prepare_count(), 1);
+
+  // A later engine initialises, and now there is a patch to boot.
+  EXPECT_TRUE(Updater::Instance().Init(AppConfig()));
+  mock_->set_next_boot_patch_path("/patches/1/dlc.vmcode");
+  EXPECT_EQ(Updater::Instance().PrepareNextBootPatch(),
+            "/patches/1/dlc.vmcode");
+  EXPECT_EQ(mock_->prepare_count(), 2);
+
+  // And that one is cached.
+  Updater::Instance().PrepareNextBootPatch();
+  EXPECT_EQ(mock_->prepare_count(), 2);
+}
+
+// Abstaining reports nothing and blocks both later reports.
+TEST_F(UpdaterTest, AbstainReportsNothingAndBlocksLaterOutcomes) {
+  Updater::Instance().AbstainFromLaunchReport();
+  Updater::Instance().ReportLaunchSuccess();
+  Updater::Instance().ReportLaunchFailure();
+  EXPECT_EQ(mock_->launch_success_count(), 0);
+  EXPECT_EQ(mock_->launch_failure_count(), 0);
+}
+
+// An outcome already reported stands; abstaining afterwards changes nothing.
+TEST_F(UpdaterTest, AbstainAfterAReportChangesNothing) {
+  Updater::Instance().ReportLaunchFailure();
+  Updater::Instance().AbstainFromLaunchReport();
+  Updater::Instance().ReportLaunchSuccess();
+  EXPECT_EQ(mock_->launch_failure_count(), 1);
+  EXPECT_EQ(mock_->launch_success_count(), 0);
 }
 
 }  // namespace testing
