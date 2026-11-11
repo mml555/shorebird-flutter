@@ -45,9 +45,16 @@ enum class ContainerStatus {
   kWrongRelease,
   /// A payload's bytes do not match its declared sha256.
   kPayloadCorrupt,
+  /// The file could not be opened or read. Says nothing about its contents, so
+  /// it is never a verdict on the patch: callers abstain rather than report.
+  kUnreadable,
 };
 
 const char* StatusName(ContainerStatus status);
+
+/// Lowercase-hex SHA-256 of `data`. Exposed for the unit tests that pin the
+/// hand-written implementation against NIST vectors.
+std::string Sha256Hex(const uint8_t* data, size_t len);
 
 /// One function to replace. `bytecode` points into the caller's mapping and is
 /// valid only as long as that mapping is.
@@ -64,7 +71,8 @@ struct Container {
 };
 
 /// Cheap first-8-bytes check, for deciding whether a path is a Route B
-/// container at all. Returns kOk or kNotAContainer; never reads the header.
+/// container at all. Returns kOk, kNotAContainer, or kUnreadable (open or read
+/// failed); never reads the header.
 ///
 /// Separate from ParseContainer because the decision it feeds -- whether to put
 /// this path into application_library_paths -- happens in ConfigureShorebird,
