@@ -51,8 +51,8 @@ std::string GoodHeader(const std::string& build_id = "abc123",
                        size_t length = 5) {
   return std::string(R"({"formatVersion":1,"release":{"buildId":")") +
          build_id + R"("},"targets":[{"library":"package:a/a.dart",)" +
-         R"("selector":"greet","offset":0,"length":)" +
-         std::to_string(length) + R"(,"sha256":")" + sha + R"("}]})";
+         R"("selector":"greet","offset":0,"length":)" + std::to_string(length) +
+         R"(,"sha256":")" + sha + R"("}]})";
 }
 
 ContainerStatus ParseVec(const std::vector<uint8_t>& bytes,
@@ -77,8 +77,8 @@ TEST(RouteBPatchTest, Sha256MatchesKnownVector) {
   EXPECT_EQ(ParseVec(bytes), ContainerStatus::kOk);
 
   // ...and the same bytes with any other declared digest must not.
-  const auto wrong = BuildContainer(
-      GoodHeader("abc123", std::string(64, '0')), "hello");
+  const auto wrong =
+      BuildContainer(GoodHeader("abc123", std::string(64, '0')), "hello");
   EXPECT_EQ(ParseVec(wrong), ContainerStatus::kPayloadCorrupt);
 }
 
@@ -112,15 +112,15 @@ TEST(RouteBPatchTest, MalformedHeaderJson) {
 }
 
 TEST(RouteBPatchTest, MissingReleaseBuildId) {
-  const auto bytes = BuildContainer(
-      R"({"formatVersion":1,"targets":[]})", "hello");
+  const auto bytes =
+      BuildContainer(R"({"formatVersion":1,"targets":[]})", "hello");
   EXPECT_EQ(ParseVec(bytes), ContainerStatus::kMalformed);
 }
 
 TEST(RouteBPatchTest, PayloadRunsPastEndOfFile) {
   // Declares 5000 bytes of payload, ships 5.
-  const auto bytes = BuildContainer(GoodHeader("abc123", kHelloSha256, 5000),
-                                    "hello");
+  const auto bytes =
+      BuildContainer(GoodHeader("abc123", kHelloSha256, 5000), "hello");
   EXPECT_EQ(ParseVec(bytes), ContainerStatus::kMalformed);
 }
 
@@ -151,10 +151,10 @@ TEST(RouteBPatchTest, ParsesTargets) {
   EXPECT_EQ(container.targets[0].library, "package:a/a.dart");
   EXPECT_EQ(container.targets[0].selector, "greet");
   EXPECT_EQ(container.targets[0].length, 5u);
-  EXPECT_EQ(std::string(reinterpret_cast<const char*>(
-                            container.targets[0].bytecode),
-                        container.targets[0].length),
-            "hello");
+  EXPECT_EQ(
+      std::string(reinterpret_cast<const char*>(container.targets[0].bytecode),
+                  container.targets[0].length),
+      "hello");
 }
 
 // Release identity is NOT checked here: it needs a live isolate, so the hook
@@ -172,9 +172,12 @@ TEST(RouteBPatchTest, ReleaseIdentityIsAvailableBeforeTargetsAreUsed) {
 TEST(RouteBPatchTest, StatusNamesAreDistinct) {
   // A code nobody can read is a bool with extra steps.
   const std::vector<ContainerStatus> all = {
-      ContainerStatus::kOk,          ContainerStatus::kNotAContainer,
-      ContainerStatus::kUnsupportedVersion, ContainerStatus::kMalformed,
-      ContainerStatus::kWrongRelease, ContainerStatus::kPayloadCorrupt};
+      ContainerStatus::kOk,
+      ContainerStatus::kNotAContainer,
+      ContainerStatus::kUnsupportedVersion,
+      ContainerStatus::kMalformed,
+      ContainerStatus::kWrongRelease,
+      ContainerStatus::kPayloadCorrupt};
   std::vector<std::string> names;
   for (const auto status : all) {
     names.emplace_back(route_b::StatusName(status));

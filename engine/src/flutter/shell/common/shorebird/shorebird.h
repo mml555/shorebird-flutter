@@ -101,9 +101,9 @@ bool PatchHasSnapshots(const std::string& patch_path);
 std::string GetValueFromYaml(const std::string& yaml, const std::string& key);
 
 #if SHOREBIRD_ROUTE_B
-/// Arms Route B activation on |settings|: installs a root_isolate_create_callback
-/// that applies the container at |path| once the root isolate exists, after its
-/// libraries load and before main runs.
+/// Arms Route B activation on |settings|: installs a
+/// root_isolate_create_callback that applies the container at |path| once the
+/// root isolate exists, after its libraries load and before main runs.
 ///
 /// Inert when |path| is empty, which is nearly every launch. CHAINS an existing
 /// callback rather than replacing it. The container is not read here: arming

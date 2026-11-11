@@ -52,10 +52,12 @@ class Sha256 {
     size_t i = buffer_len_;
     if (buffer_len_ < 56) {
       buffer_[i++] = 0x80;
-      while (i < 56) buffer_[i++] = 0x00;
+      while (i < 56)
+        buffer_[i++] = 0x00;
     } else {
       buffer_[i++] = 0x80;
-      while (i < 64) buffer_[i++] = 0x00;
+      while (i < 64)
+        buffer_[i++] = 0x00;
       Transform(buffer_);
       memset(buffer_, 0, 56);
     }
