@@ -33,6 +33,23 @@ declare_args() {
   # nor boot patches.
   shorebird_use_interpreter = false
 
+  # Whether this engine runs Route B patches: Dart bytecode that the AOT
+  # runtime attaches to existing functions and the Dart VM's interpreter
+  # (dart_dynamic_modules) runs. Route B is how an iOS engine takes patches
+  # without Shorebird's private Dart, so it is separate from
+  # shorebird_use_interpreter and the two must not both be on.
+  #
+  # With it on, the iOS updater starts although shorebird_use_interpreter stays
+  # false (SHOREBIRD_USE_INTERPRETER stays 0), the engine arms the pre-main
+  # activation hook for a Route B container, boot preparation is the updater's
+  # single atomic call, and launch success is reported from Dart (see
+  # lib/ui/hooks.dart). It does not turn on dart_dynamic_modules: pass
+  # --dart-dynamic-modules to tools/gn, or an engine built without it refuses
+  # every patch as unsupported-build.
+  #
+  # Off by default, and off changes nothing.
+  shorebird_route_b = false
+
   # Whether to build host-side development artifacts.
   flutter_build_engine_artifacts = true
 
@@ -94,6 +111,13 @@ if ((is_android || is_ios || is_linux || is_mac || is_win) &&
 
 if (shorebird_use_interpreter) {
   feature_defines_list += [ "SHOREBIRD_USE_INTERPRETER=1" ]
+}
+
+if (shorebird_route_b) {
+  assert(!shorebird_use_interpreter,
+         "shorebird_route_b and shorebird_use_interpreter are exclusive: " +
+             "Route B runs on vanilla Dart's interpreter, not Shorebird's.")
+  feature_defines_list += [ "SHOREBIRD_ROUTE_B=1" ]
 }
 
 if (is_ios || is_mac) {

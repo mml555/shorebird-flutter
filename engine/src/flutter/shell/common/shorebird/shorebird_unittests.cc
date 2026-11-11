@@ -1,10 +1,12 @@
 #include "flutter/shell/common/shorebird/shorebird.h"
 
 #include <algorithm>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "flutter/fml/file.h"
 #include "flutter/fml/paths.h"
 #include "flutter/shell/common/shorebird/updater.h"
 #include "gtest/gtest.h"
@@ -81,9 +83,15 @@ TEST_F(LoadPatchOrBaseTest, ReportsAFailedPatchAndLoadsBase) {
   EXPECT_TRUE(Run("patch.vmcode"));
   EXPECT_EQ(attempts_, std::vector<std::string>({"patch.vmcode", "base.so"}));
   const auto& log = mock_->call_log();
+#if SHOREBIRD_ROUTE_B
+  // A Route B engine's PrepareNextBootPatch already recorded the start.
+  ASSERT_EQ(log.size(), 1u);
+  EXPECT_EQ(log[0], "ReportLaunchFailure");
+#else
   ASSERT_EQ(log.size(), 2u);
   EXPECT_EQ(log[0], "ReportLaunchStart");
   EXPECT_EQ(log[1], "ReportLaunchFailure");
+#endif
 }
 
 // The Shell that boots the base code reports start and success. Neither may
@@ -149,7 +157,14 @@ TEST_F(ConfigureShorebirdTest, InitializesTheUpdaterAndReturnsThePatch) {
             fml::paths::JoinPaths({"cache", "shorebird_updater", "abc"}));
   EXPECT_EQ(config.app_storage_dir,
             fml::paths::JoinPaths({"storage", "shorebird_updater", "abc"}));
+#if SHOREBIRD_ROUTE_B
+  // One call validates, selects and attributes.
+  EXPECT_EQ(mock_->prepare_count(), 1);
+  EXPECT_EQ(mock_->validate_count(), 0);
+#else
   EXPECT_EQ(mock_->validate_count(), 1);
+  EXPECT_EQ(mock_->prepare_count(), 0);
+#endif
   // The Shell reports the boot once it exists.
   EXPECT_EQ(mock_->launch_start_count(), 0);
 }
@@ -218,6 +233,115 @@ TEST_F(ConfigureShorebirdTest, FailsWhenNoInitSucceeded) {
   EXPECT_FALSE(
       ConfigureShorebird(Args("app_id: abc\n", {"1.0.0", "3"}), patch_path));
 }
+
+#if SHOREBIRD_ROUTE_B
+// A second engine in one process must boot the patch the FIRST one did, even
+// after the updater would name a newer one. Re-preparing would re-attribute the
+// launch to a patch the first engine's snapshot never ran.
+TEST_F(ConfigureShorebirdTest, SecondEngineGetsTheFirstEnginesPatch) {
+  mock_->set_next_boot_patch_path("patches/1/dlc.vmcode");
+  std::string first_path;
+  ASSERT_TRUE(
+      ConfigureShorebird(Args("app_id: abc\n", {"1.0.0", "3"}), first_path));
+
+  mock_->set_next_boot_patch_path("patches/3/dlc.vmcode");
+  mock_->set_init_result(false);
+  std::string second_path;
+  ConfigureShorebird(Args("app_id: abc\n", {"1.0.0", "3"}), second_path);
+
+  EXPECT_EQ(second_path, "patches/1/dlc.vmcode");
+  EXPECT_EQ(mock_->prepare_count(), 1);
+}
+
+// Route B activation arming contract. ConfigureShorebird cannot be reached for
+// arming (it needs no snapshot here, but arming is deliberately not in it), so
+// the unit is pinned directly.
+TEST(Shorebird, RouteBArmingIsInertWithoutAPatch) {
+  Settings settings;
+  ASSERT_EQ(settings.root_isolate_create_callback, nullptr);
+  InstallRouteBActivationHook(settings, "");
+  // Not merely "does not crash": a callback installed here would run on every
+  // app that has no Route B patch, which is nearly all of them.
+  EXPECT_EQ(settings.root_isolate_create_callback, nullptr);
+}
+
+TEST(Shorebird, RouteBArmingInstallsACallbackForAPatch) {
+  Settings settings;
+  InstallRouteBActivationHook(settings, "/nonexistent/dlc.vmcode");
+  // The path is not read here: arming happens before the engine starts and the
+  // container is opened later, from the callback. A missing file must still
+  // arm, and fail (reporting) at activation time.
+  EXPECT_NE(settings.root_isolate_create_callback, nullptr);
+}
+
+TEST(Shorebird, RouteBArmingChainsAnExistingCallback) {
+  Settings settings;
+  int existing_calls = 0;
+  settings.root_isolate_create_callback = [&existing_calls](const auto&) {
+    existing_calls++;
+  };
+  InstallRouteBActivationHook(settings, "/nonexistent/dlc.vmcode");
+  EXPECT_NE(settings.root_isolate_create_callback, nullptr);
+  // Replacing rather than chaining would silently disable whatever the
+  // embedder installed, and the symptom would appear nowhere near Route B. The
+  // callback needs a live isolate, so that it runs the existing one first is
+  // by construction here; what is pinned is that one is still installed.
+  EXPECT_EQ(existing_calls, 0);
+}
+
+// A Route B container is bytes plus a header, not a snapshot. Handed to the VM
+// as the app's library it is a failure to boot, so it must never reach
+// application_library_paths, whatever the file is called.
+TEST(ApplyPatchToSettings, ArmsARouteBContainerAndLeavesTheLibraryPathsAlone) {
+  fml::ScopedTemporaryDirectory dir;
+  const std::string path = fml::paths::JoinPaths({dir.path(), "dlc.vmcode"});
+  {
+    std::ofstream out(path, std::ios::binary);
+    out << "SBRBPTCH" << std::string(16, '\0');
+  }
+  Settings settings;
+  settings.application_library_paths = {"libapp.so"};
+
+  ApplyPatchToSettings(path, settings);
+
+  EXPECT_EQ(settings.application_library_paths,
+            std::vector<std::string>({"libapp.so"}));
+  EXPECT_NE(settings.root_isolate_create_callback, nullptr);
+}
+
+// The G15 two-engine case: arming is a property of the patch path alone. A
+// second engine's Init fails by design, and nothing about that may skip it.
+TEST_F(ConfigureShorebirdTest, SecondEngineIsArmedEvenThoughItsInitFailed) {
+  fml::ScopedTemporaryDirectory dir;
+  const std::string path = fml::paths::JoinPaths({dir.path(), "dlc.vmcode"});
+  {
+    std::ofstream out(path, std::ios::binary);
+    out << "SBRBPTCH" << std::string(16, '\0');
+  }
+  mock_->set_next_boot_patch_path(path);
+  std::string first_path;
+  ASSERT_TRUE(
+      ConfigureShorebird(Args("app_id: abc\n", {"1.0.0", "3"}), first_path));
+
+  mock_->set_init_result(false);
+  std::string second_path;
+  ConfigureShorebird(Args("app_id: abc\n", {"1.0.0", "3"}), second_path);
+
+  Settings second;
+  ApplyPatchToSettings(second_path, second);
+  EXPECT_NE(second.root_isolate_create_callback, nullptr);
+}
+
+// Anything that is not a container is an ordinary code patch and takes the
+// platform's usual path (here, a desktop host: it replaces the library).
+TEST(ApplyPatchToSettings, LeavesANonContainerToThePlatformPath) {
+  Settings settings;
+  settings.application_library_paths = {"libapp.so"};
+  ApplyPatchToSettings("/nonexistent/dlc.vmcode", settings);
+  EXPECT_EQ(settings.root_isolate_create_callback, nullptr);
+}
+#endif  // SHOREBIRD_ROUTE_B
+
 
 }  // namespace testing
 }  // namespace flutter

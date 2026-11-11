@@ -221,6 +221,21 @@ source_set("updater") {
   }
 }
 
+# Route B patch containers. Split out from :shorebird so the container reader
+# can be unit-tested without the updater and the whole shell. Always built: it
+# is plain C++, and only shorebird.cc's use of it is behind shorebird_route_b.
+source_set("route_b_patch") {
+  sources = [
+    "route_b_patch.cc",
+    "route_b_patch.h",
+  ]
+
+  deps = [
+    "//flutter/fml",
+    "//flutter/third_party/rapidjson",
+  ]
+}
+
 source_set("shorebird") {
   sources = [
     "shorebird.cc",
@@ -228,6 +243,7 @@ source_set("shorebird") {
   ]
 
   deps = [
+    ":route_b_patch",
     ":snapshots_data_handle",
     ":updater",
     "//flutter/fml",
@@ -293,6 +309,7 @@ if (enable_unittests) {
 
     sources = [
       "engine_callbacks_unittests.cc",
+      "route_b_patch_unittests.cc",
       "shorebird_unittests.cc",
       "snapshots_data_handle_unittests.cc",
       "updater_unittests.cc",
@@ -304,6 +321,7 @@ if (enable_unittests) {
 
     deps = [
       ":engine_callbacks",
+      ":route_b_patch",
       ":shorebird",
       ":shorebird_fixtures",
       ":snapshots_data_handle",

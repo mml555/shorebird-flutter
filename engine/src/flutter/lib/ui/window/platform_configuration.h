@@ -663,6 +663,26 @@ class PlatformConfigurationNativeApi {
 
   static void SetNeedsReportTimings(bool value);
 
+  /// Route B (`shorebird_route_b`): report the launch outcome from the DART
+  /// startup boundary, as `success = earliest(main completion, first framework
+  /// frame)`.
+  ///
+  /// Both feed `shorebird::Updater`'s existing once-per-process latch, which
+  /// already arbitrates success against failure: the first caller of either
+  /// wins and every later call is a no-op. That is what makes the policy work
+  /// with no new state at the Shell or raster level.
+  ///
+  /// Without `shorebird_route_b` both are no-ops, because the Shell reports
+  /// the launch itself.
+  static void ReportLaunchSuccess();
+
+  static void ReportLaunchFailure();
+
+  /// Whether dart:ui is to report the launch (see above). A compile-time
+  /// constant, asked once, so an engine without `shorebird_route_b` runs
+  /// `_runMain` and `_drawFrame` exactly as before.
+  static bool ReportsLaunchFromDart();
+
   static Dart_Handle GetPersistentIsolateData();
 
   static Dart_Handle ComputePlatformResolvedLocale(
