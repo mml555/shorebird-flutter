@@ -168,8 +168,11 @@ class Updater {
   /// neither outcome. Use when the evidence is a read failure rather than a
   /// property of the patch (an unreadable artifact says nothing about it). It
   /// consumes the same latch as the two reports, so a later success or failure
-  /// from this process is dropped. What the updater then concludes from a boot
-  /// with no recorded outcome is the updater's policy, not decided here.
+  /// from this process is dropped. The boot attempt PrepareNextBootPatch
+  /// already recorded stays unconfirmed, so the updater's boot-attempt
+  /// threshold (BOOT_FAILURE_THRESHOLD = 2) still applies: two abstained boots
+  /// in a row tombstone the patch at the next init. That is intended for an
+  /// artifact that stays unreadable; a single transient failure is retried.
   void AbstainFromLaunchReport();
 
   // Update checking

@@ -122,8 +122,10 @@ void Updater::ReportLaunchSuccess() {
 void Updater::AbstainFromLaunchReport() {
   // Claims the same once-per-process latch a report would, but forwards
   // nothing: no success and no failure. A later ReportLaunchSuccess (from Dart)
-  // or ReportLaunchFailure is then a no-op, so a patch whose state could not be
-  // judged is neither credited nor tombstoned by this process.
+  // or ReportLaunchFailure is then a no-op, so this process neither credits nor
+  // explicitly fails a patch whose state it could not judge. The boot attempt
+  // PrepareNextBootPatch recorded stays unconfirmed and counts toward the
+  // updater's boot-attempt threshold; see AbstainFromLaunchReport in updater.h.
   launch_completed_.store(true);
 }
 

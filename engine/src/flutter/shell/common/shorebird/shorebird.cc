@@ -364,7 +364,12 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
     if (!mapping || mapping->GetSize() == 0) {
       // ABSTAIN, do not fail. Being unable to read the artifact is not
       // evidence about the patch (EMFILE, protected data not yet available),
-      // so this process neither activates it nor credits or tombstones it.
+      // so this process neither activates it nor reports on it. However,
+      // the boot attempt PrepareNextBootPatch already recorded stays
+      // unconfirmed, so the updater's boot-attempt threshold
+      // (BOOT_FAILURE_THRESHOLD = 2) still applies: a patch whose artifact
+      // stays unreadable is tombstoned after two such boots, which is right for
+      // an artifact that can never run, while one transient failure is retried.
       RouteBReport(path, "REFUSED (unreadable)");
       shorebird::Updater::Instance().AbstainFromLaunchReport();
       return;
@@ -684,8 +689,13 @@ void ApplyPatchToSettings(const std::string& patch_path, Settings& settings) {
   const auto sniffed = route_b::SniffFile(patch_path);
   if (sniffed == route_b::ContainerStatus::kUnreadable) {
     // ABSTAIN. A read failure says nothing about the patch: this process does
-    // not arm it, and reports neither success nor failure for it, so a
+    // not arm it, and reports neither success nor failure for it, so one
     // transient EMFILE cannot tombstone a good patch or credit one never run.
+    // However, the boot attempt PrepareNextBootPatch already recorded stays
+    // unconfirmed, so the updater's boot-attempt threshold
+    // (BOOT_FAILURE_THRESHOLD = 2) still applies: a patch whose artifact stays
+    // unreadable is tombstoned after two such boots, which is right for an
+    // artifact that can never run, while one transient failure is retried.
     FML_LOG(ERROR) << "Shorebird: cannot read the active patch " << patch_path
                    << "; not activating it and not reporting on it";
     shorebird::Updater::Instance().AbstainFromLaunchReport();

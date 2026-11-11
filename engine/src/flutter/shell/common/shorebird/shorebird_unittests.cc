@@ -324,8 +324,10 @@ TEST_F(ConfigureShorebirdTest, RouteBArmingChainsAnExistingCallback) {
   EXPECT_EQ(mock_->launch_success_count(), 0);
 }
 
-// S3: an unreadable artifact abstains. No failure (a transient read error must
-// not tombstone a good patch) and no success (nothing was activated).
+// S3: an unreadable artifact abstains. No explicit failure (one transient read
+// error must not tombstone a good patch) and no success (nothing was
+// activated). Repeated abstains still reach the updater's boot-attempt
+// threshold, which is the updater's to test.
 TEST_F(ConfigureShorebirdTest, HookAbstainsWhenTheArtifactIsUnreadable) {
   Settings settings;
   InstallRouteBActivationHook(settings, "/nonexistent/dlc.vmcode");
