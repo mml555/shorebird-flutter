@@ -14,7 +14,9 @@
 #include "flutter/lib/ui/window/platform_message_response_dart_port.h"
 #include "flutter/lib/ui/window/viewport_metrics.h"
 #if SHOREBIRD_ROUTE_B
-#include "flutter/shell/common/shorebird/updater.h"
+// nogncheck: lib/ui depends on :updater only when shorebird_route_b is on,
+// which is also the only time this include is compiled.
+#include "flutter/shell/common/shorebird/updater.h"  // nogncheck
 #endif
 #include "third_party/tonic/converter/dart_converter.h"
 #include "third_party/tonic/dart_args.h"
