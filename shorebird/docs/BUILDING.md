@@ -14,9 +14,15 @@ All commands assume you are running from the `engine/src` directory.
 ### iOS (arm64)
 
 ```bash
-./flutter/tools/gn --no-rbe --no-enable-unittests --runtime-mode=release --ios --gn-arg='shorebird_include_mixed_mode=true'
+./flutter/tools/gn --no-rbe --runtime-mode=release --ios --dart-dynamic-modules --gn-arg='shorebird_route_b=true'
 ninja -C out/ios_release flutter/shell/platform/darwin/ios:flutter_framework flutter/lib/snapshot:generate_snapshot_bins
 ```
+
+This is the Route B release engine: Dart's interpreter is built in
+(`--dart-dynamic-modules`) and the updater runs on iOS (`shorebird_route_b`).
+Do not add `--no-enable-unittests` here: `tools/gn` then sets
+`dart_dynamic_modules = false` without saying so, and gn stops at the
+`shorebird_route_b` assert.
 
 ### Android arm64
 

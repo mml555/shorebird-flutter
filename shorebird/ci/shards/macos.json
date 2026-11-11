@@ -51,7 +51,7 @@
     "steps": [
       {
         "type": "gn_ninja",
-        "gn_args": ["--ios", "--runtime-mode=release", "--gn-arg=shorebird_include_mixed_mode=true"],
+        "gn_args": ["--ios", "--runtime-mode=release", "--dart-dynamic-modules", "--gn-arg=shorebird_route_b=true"],
         "ninja_targets": ["flutter/shell/platform/darwin/ios:flutter_framework", "flutter/lib/snapshot:generate_snapshot_bins"],
         "out_dir": "ios_release"
       },
