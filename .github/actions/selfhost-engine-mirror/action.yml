@@ -13,7 +13,7 @@ inputs:
     description: >-
       mml555/shorebird commit whose selfhost/cdn runs the mirror. Pinned so a
       change on that repo's main cannot change this repo's CI unseen.
-    default: 84dc1bb339fc60141f09b3c6b002a4077ed9f037
+    default: c413adee9236ee93396fa08387e404e325869dfd
 
 runs:
   using: composite
@@ -140,8 +140,11 @@ runs:
         HIT: ${{ steps.caddy-cache.outputs.cache-hit }}
       run: |
         bin="$RUNNER_TEMP/cdn-native/bin"
+        # grep -x >/dev/null, not grep -q: -q exits at the first match, caddy then
+        # dies of SIGPIPE writing the rest of the list, and pipefail fails the
+        # check, which here only costs a needless rebuild (mml555/shorebird#178).
         if [ "$HIT" = true ] && [ -x "$bin/caddy" ] && [ -f "$bin/caddy.stamp" ] \
-            && "$bin/caddy" list-modules 2>/dev/null | grep -qx 'http.handlers.cache'; then
+            && "$bin/caddy" list-modules 2>/dev/null | grep -x 'http.handlers.cache' >/dev/null; then
           echo "reuse=true" >> "$GITHUB_OUTPUT"
         else
           [ "$HIT" = true ] && echo "::warning::The cached Caddy is unusable; rebuilding it. Purge the entry with: gh cache delete selfhost-caddy-... -R $GITHUB_REPOSITORY"
