@@ -13,7 +13,7 @@ inputs:
     description: >-
       mml555/shorebird commit whose selfhost/cdn runs the mirror. Pinned so a
       change on that repo's main cannot change this repo's CI unseen.
-    default: c413adee9236ee93396fa08387e404e325869dfd
+    default: 9921d48539c7aa041a0a6a721e93cf0cf37d7916
 
 runs:
   using: composite
