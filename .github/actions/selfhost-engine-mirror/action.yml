@@ -194,7 +194,21 @@ runs:
         fi
         # The mirror's processes outlive this step; keep the token out of them.
         unset GH_TOKEN
-        cat "$rel/experimental_hashes-$ENGINE.map" >> "$cdn/experimental_hashes.map"
+        # Caddy's map refuses a duplicate key, even with the same value, and a
+        # selfhost-ref that already maps this engine carries the release's line.
+        # Append only keys the checked-in map lacks; a key mapped to a different
+        # fallback is a conflict, not something to pick a side on.
+        awk '
+          FNR == NR { if ($0 !~ /^[[:space:]]*(#|$)/) have[$1] = $2; next }
+          $0 ~ /^[[:space:]]*(#|$)/ { next }
+          ($1 in have) {
+            if (have[$1] != $2) { printf "::error::experimental_hashes.map maps %s to %s, the release to %s\n", $1, have[$1], $2 > "/dev/stderr"; bad = 1 }
+            next
+          }
+          { print }
+          END { exit bad }
+        ' "$cdn/experimental_hashes.map" "$rel/experimental_hashes-$ENGINE.map" > "$rel/map.add"
+        cat "$rel/map.add" >> "$cdn/experimental_hashes.map"
 
         # Gradle refuses a plain-http Maven repository, so serve https with a
         # throwaway CA trusted by this runner's JDK and OS store. As root: the
