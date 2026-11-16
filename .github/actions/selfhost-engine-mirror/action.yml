@@ -13,7 +13,7 @@ inputs:
     description: >-
       mml555/shorebird commit whose selfhost/cdn runs the mirror. Pinned so a
       change on that repo's main cannot change this repo's CI unseen.
-    default: 9921d48539c7aa041a0a6a721e93cf0cf37d7916
+    default: 2c02ffc3b6f9a24b3217c19e8f112ae06207e9e0
 
 runs:
   using: composite
@@ -114,9 +114,9 @@ runs:
           exit 1
         fi
         # The one place the Go version is named: setup-go and the cache key
-        # both read it. Caddy v2.11 needs Go 1.26 (its go.mod), so move it
-        # with the Caddy pin in run_native.sh.
-        echo "go=1.26" >> "$GITHUB_OUTPUT"
+        # both read it. The cache plugins' storage modules need Go 1.27.1
+        # (CADDY_GO_MIN in run_native.sh), so move it with the pins there.
+        echo "go=1.27" >> "$GITHUB_OUTPUT"
 
     - name: 🗄️ Restore the cached Caddy
       id: caddy-cache
