@@ -22,9 +22,8 @@ jobs:
   # named in bin/internal/engine.version, so a PR that changes nothing under
   # packages/ or bin/ (engine sources, DEPS and Dart rolls, other workflows,
   # shorebird/ci) can't change their result. Such PRs skip them; pushes to
-  # shorebird/dev always run them (release branches get no push run). The iOS job's xlarge runner is this
-  # repo's only billed Actions minutes (the repo is public, so standard
-  # runners are free).
+  # shorebird/dev always run them (release branches get no push run). Every
+  # job here uses a standard runner, which is free on a public repo.
   changes:
     runs-on: ubuntu-latest
     outputs:
@@ -45,7 +44,8 @@ jobs:
             exit 0
           fi
           files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')
-          if grep -qE '^(packages/|bin/|pubspec\.(yaml|lock)$|\.github/workflows/shorebird_ci\.yml$)' <<< "$files"; then
+          # The jobs run the selfhost-engine-mirror action, so a change to it runs them too.
+          if grep -qE '^(packages/|bin/|pubspec\.(yaml|lock)$|\.github/workflows/shorebird_ci\.yml$|\.github/actions/selfhost-engine-mirror/)' <<< "$files"; then
             echo "tests=true" >> "$GITHUB_OUTPUT"
           else
             echo "No changes under packages/ or bin/; skipping the tests."
@@ -126,9 +126,10 @@ jobs:
   shorebird-ios-tests:
     needs: changes
     if: needs.changes.outputs.tests == 'true'
-    # iOS tests require macOS for Xcode. Five sequential iOS builds make this
-    # the slowest check, so it gets the 5-core xlarge runner.
-    runs-on: macos-latest-xlarge
+    # iOS tests require macOS for Xcode. The standard runner: larger runners
+    # (macos-latest-xlarge) are billed even on public repos, and without a
+    # paid plan GitHub never starts the job, so it failed without running.
+    runs-on: macos-latest
 
     name: 🍎 Shorebird iOS Tests
 
