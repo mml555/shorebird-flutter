@@ -18,7 +18,7 @@ vars = {
   'skia_revision': '0e5d8d1be81b22f5529a41cf4810dd89b63527ba',
   # SELFHOST: the Dart fork pin. The revision is a placeholder until the Dart
   # port (Dart 3.14.0, fa8c1270) lands; see tmp/f350/dart_handoff.md.
-  "dart_sdk_revision": "67e990d35524c14b2561fd27ce62eb61e0a1e662",
+  "dart_sdk_revision": "0cd04a7717f20d5f9ae64014cb2239a3f961f895",
   "dart_sdk_git": "https://github.com/mml555/dart-sdk-shorebird-lineage.git",
   "updater_git": "https://github.com/mml555/shorebird-updater-mirror.git",
   "updater_rev": "87c198d30f875a3da317d70935e1025dc13064dd",
