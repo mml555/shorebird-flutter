@@ -1,0 +1,227 @@
+name: shorebird_ci
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+  push:
+    branches:
+      - shorebird/dev
+
+# The selfhost-engine-mirror step runs mml555/shorebird's scripts, some under
+# sudo; they need nothing beyond reading this repository and its releases.
+permissions:
+  contents: read
+  # The changes job lists the PR's files.
+  pull-requests: read
+
+jobs:
+  # These tests build apps with the flutter tool against the prebuilt engine
+  # named in bin/internal/engine.version, so a PR that changes nothing under
+  # packages/ or bin/ (engine sources, DEPS and Dart rolls, other workflows,
+  # shorebird/ci) can't change their result. Such PRs skip them; pushes to
+  # shorebird/dev always run them (release branches get no push run). The iOS job's xlarge runner is this
+  # repo's only billed Actions minutes (the repo is public, so standard
+  # runners are free).
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      tests: ${{ steps.filter.outputs.tests }}
+    steps:
+      - id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+        run: |
+          # pulls/N/files stops at 3,000 files without saying so; a PR that
+          # big (an upstream merge) runs the tests.
+          if [[ "$EVENT" != pull_request || "$CHANGED_FILES" -ge 3000 ]]; then
+            echo "tests=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')
+          if grep -qE '^(packages/|bin/|pubspec\.(yaml|lock)$|\.github/workflows/shorebird_ci\.yml$)' <<< "$files"; then
+            echo "tests=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No changes under packages/ or bin/; skipping the tests."
+            echo "tests=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # NOTE: Windows is not included because shorebird_tests depends on
+  # flutter_flavorizr which requires Xcode. Additionally, flutter_tools
+  # tests on Windows would need additional setup work.
+
+  flutter-tools-tests:
+    needs: changes
+    if: needs.changes.outputs.tests == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    name: 🛠️ Flutter Tools Tests (${{ matrix.os }})
+
+    steps:
+      - name: 📚 Git Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: 🎯 Setup Dart
+        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+
+      - name: 🪞 Self-host engine mirror
+        uses: ./.github/actions/selfhost-engine-mirror
+
+      - name: 🐦 Run Flutter Tools Tests
+        run: ../../bin/flutter test test/general.shard
+        working-directory: packages/flutter_tools
+
+  shorebird-android-tests:
+    needs: changes
+    if: needs.changes.outputs.tests == 'true'
+    # Android tests run on Ubuntu (faster runners, no macOS needed)
+    runs-on: ubuntu-latest
+
+    name: 🤖 Shorebird Android Tests
+
+    steps:
+      - name: 📚 Git Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: 🎯 Setup Dart
+        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: "zulu"
+          java-version: "17"
+
+      - name: 📦 Cache Gradle
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: 🪞 Self-host engine mirror
+        uses: ./.github/actions/selfhost-engine-mirror
+
+      - name: 🤖 Run Android Tests
+        run: dart test test/base_test.dart test/android_test.dart
+        working-directory: packages/shorebird_tests
+
+  shorebird-ios-tests:
+    needs: changes
+    if: needs.changes.outputs.tests == 'true'
+    # iOS tests require macOS for Xcode. Five sequential iOS builds make this
+    # the slowest check, so it gets the 5-core xlarge runner.
+    runs-on: macos-latest-xlarge
+
+    name: 🍎 Shorebird iOS Tests
+
+    steps:
+      - name: 📚 Git Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: 🎯 Setup Dart
+        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+
+      # warmUpTemplateProject builds an APK when the Gradle cache is empty.
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: "zulu"
+          java-version: "17"
+
+      - name: 📦 Cache Gradle
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # base_test.dart runs in shorebird-android-tests.
+      - name: 🪞 Self-host engine mirror
+        uses: ./.github/actions/selfhost-engine-mirror
+
+      - name: 🍎 Run iOS Tests
+        run: dart test test/ios_test.dart
+        working-directory: packages/shorebird_tests
+
+  shorebird-macos-android-smoke-test:
+    needs: changes
+    if: needs.changes.outputs.tests == 'true'
+    # Quick sanity check that Android builds work on macOS too. Its own job so
+    # it runs alongside the iOS tests instead of after them.
+    runs-on: macos-latest
+
+    name: 🤖 Shorebird Android Smoke Test (macOS)
+
+    steps:
+      - name: 📚 Git Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: 🎯 Setup Dart
+        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: "zulu"
+          java-version: "17"
+
+      - name: 📦 Cache Gradle
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: 🪞 Self-host engine mirror
+        uses: ./.github/actions/selfhost-engine-mirror
+
+      - name: 🤖 Run Android Smoke Test (macOS)
+        run: dart test test/android_test.dart --name "can build an apk"
+        working-directory: packages/shorebird_tests
+        env:
+          # Enables streaming subprocess output for debugging timeouts.
+          VERBOSE: "1"
+
+  # Aggregator required by branch protection on shorebird/dev so the rule can
+  # list a single context ("ci") instead of every matrix-expanded job above.
+  # Skipped jobs (see changes) pass it.
+  ci:
+    if: always()
+    needs:
+      - changes
+      - flutter-tools-tests
+      - shorebird-android-tests
+      - shorebird-ios-tests
+      - shorebird-macos-android-smoke-test
+    runs-on: ubuntu-latest
+    steps:
+      - if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          echo "One or more upstream jobs failed or were cancelled."
+          exit 1

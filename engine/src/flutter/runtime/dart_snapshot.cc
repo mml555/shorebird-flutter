@@ -6,12 +6,18 @@
 
 #include <sstream>
 
+#include <third_party/dart/runtime/bin/elf_loader.h>
 #include "flutter/fml/native_library.h"
 #include "flutter/fml/paths.h"
 #include "flutter/fml/trace_event.h"
 #include "flutter/lib/snapshot/snapshot.h"
 #include "flutter/runtime/dart_vm.h"
 #include "third_party/dart/runtime/include/dart_api.h"
+
+#if SHOREBIRD_USE_INTERPRETER
+#include "flutter/runtime/shorebird/patch_cache.h"  // nogncheck
+#endif
+#include "flutter/shell/common/shorebird/updater.h"  // nogncheck
 
 namespace flutter {
 
@@ -144,7 +150,27 @@ static std::shared_ptr<const fml::Mapping> ResolveIsolateData(
                                                 nullptr,  // release_func
                                                 true      // dontneed_safe
   );
-#else   // DART_SNAPSHOT_STATIC_LINK
+#else  // DART_SNAPSHOT_STATIC_LINK
+  // Tell the Rust updater we're booting from whatever patch it selected.
+  // This copies next_boot → current_boot in the Rust state. The call is
+  // guarded inside Updater to execute at most once per process — see the
+  // Updater class comment for why this matters in add-to-app and
+  // FlutterEngineGroup scenarios.
+#if SHOREBIRD_ROUTE_B
+  // NO LAUNCH REPORTING HERE in a Route B engine. Attribution belongs to
+  // Updater::PrepareNextBootPatch(), which records the patch it returns, and a
+  // start reported from snapshot resolution is a second reading of the
+  // candidate pointer that can disagree with it.
+#else
+  shorebird::Updater::Instance().ReportLaunchStart();
+#endif
+#if SHOREBIRD_USE_INTERPRETER
+  // Try loading from a Shorebird patch first.
+  if (auto mapping = TryLoadFromPatch(settings.application_library_paths,
+                                      PatchSymbol::kIsolateData)) {
+    return mapping;
+  }
+#endif  // SHOREBIRD_USE_INTERPRETER
   return SearchMapping(
       settings.isolate_snapshot_data,       // embedder_mapping_callback
       settings.isolate_snapshot_data_path,  // file_path
@@ -163,7 +189,14 @@ static std::shared_ptr<const fml::Mapping> ResolveIsolateInstructions(
                                                 nullptr,  // release_func
                                                 true      // dontneed_safe
   );
-#else   // DART_SNAPSHOT_STATIC_LINK
+#else  // DART_SNAPSHOT_STATIC_LINK
+#if SHOREBIRD_USE_INTERPRETER
+  // Try loading from a Shorebird patch first.
+  if (auto mapping = TryLoadFromPatch(settings.application_library_paths,
+                                      PatchSymbol::kIsolateInstructions)) {
+    return mapping;
+  }
+#endif  // SHOREBIRD_USE_INTERPRETER
   return SearchMapping(
       settings.isolate_snapshot_instr,           // embedder_mapping_callback
       settings.isolate_snapshot_instr_path,      // file_path

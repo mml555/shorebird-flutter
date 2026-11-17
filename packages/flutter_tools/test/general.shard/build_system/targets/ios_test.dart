@@ -18,13 +18,14 @@ import 'package:flutter_tools/src/build_system/targets/ios.dart';
 import 'package:flutter_tools/src/globals.dart' as globals;
 import 'package:flutter_tools/src/ios/xcodeproj.dart';
 import 'package:flutter_tools/src/project.dart';
+import 'package:flutter_tools/src/shorebird/shorebird_defines.dart';
 import 'package:test/fake.dart';
 import 'package:unified_analytics/unified_analytics.dart';
 
 import '../../../src/common.dart';
 import '../../../src/context.dart';
 import '../../../src/fake_process_manager.dart';
-import '../../../src/fakes.dart';
+import '../../../src/fakes.dart' hide FakeProcess;
 import '../../../src/package_config.dart';
 
 final Platform macPlatform = FakePlatform(
@@ -766,6 +767,118 @@ void main() {
       Platform: () => macPlatform,
     },
   );
+
+  testUsingContext(
+    'ReleaseIosApplicationBundle compiles shorebird.yaml using the flavor app_id',
+    () async {
+      environment.defines[kBuildMode] = 'release';
+      environment.defines[kXcodeAction] = 'install';
+      environment.defines[kFlavor] = 'internal';
+
+      fileSystem.file('pubspec.yaml')
+        ..createSync()
+        ..writeAsStringSync('''
+name: example
+flutter:
+  assets:
+    - shorebird.yaml
+''');
+
+      fileSystem.file('shorebird.yaml')
+        ..createSync()
+        ..writeAsStringSync('''
+app_id: base-app-id
+flavors:
+  internal: internal-app-id
+  stable: stable-app-id
+''');
+
+      writePackageConfigFiles(directory: fileSystem.currentDirectory, mainLibName: 'example');
+
+      fileSystem
+          .file(fileSystem.path.join('ios', 'Flutter', 'AppFrameworkInfo.plist'))
+          .createSync(recursive: true);
+      environment.buildDir
+          .childDirectory('App.framework')
+          .childFile('App')
+          .createSync(recursive: true);
+      environment.buildDir.childFile('native_assets.json').createSync();
+
+      final Directory frameworkDirectory = environment.outputDir.childDirectory('App.framework');
+      final File frameworkDirectoryBinary = frameworkDirectory.childFile('App');
+      final File infoPlist = frameworkDirectory.childFile('Info.plist');
+      processManager.addCommands(<FakeCommand>[
+        createPlutilFakeCommand(infoPlist),
+        FakeCommand(
+          command: <String>[
+            'xattr',
+            '-r',
+            '-d',
+            'com.apple.FinderInfo',
+            frameworkDirectoryBinary.path,
+          ],
+        ),
+        FakeCommand(
+          command: <String>['codesign', '--force', '--sign', '-', frameworkDirectoryBinary.path],
+        ),
+      ]);
+
+      await const ReleaseIosApplicationBundle().build(environment);
+
+      final File compiledYaml = frameworkDirectory
+          .childDirectory('flutter_assets')
+          .childFile('shorebird.yaml');
+      expect(compiledYaml.readAsStringSync(), 'app_id: internal-app-id');
+    },
+    overrides: <Type, Generator>{
+      FileSystem: () => fileSystem,
+      ProcessManager: () => processManager,
+      Platform: () => macPlatform,
+    },
+  );
+
+  // Shorebird-specific: the ShorebirdDdMaxBytes define is what turns on the
+  // DD pass for Xcode rebuilds (flutter assemble), so guard the plumbing from
+  // the define to AOTSnapshotter.build.
+  for (final withDefine in <bool>[true, false]) {
+    final recorder = _RecordingProcessManager();
+    testUsingContext(
+      'AotAssemblyRelease ${withDefine ? 'runs' : 'skips'} the DD pass '
+      '${withDefine ? 'with' : 'without'} the $kShorebirdDdMaxBytes define',
+      () async {
+        final FileSystem fileSystem = MemoryFileSystem.test();
+        final environment = Environment.test(
+          fileSystem.currentDirectory,
+          defines: <String, String>{
+            kTargetPlatform: 'ios',
+            kSdkRoot: 'path/to/iPhoneOS.sdk',
+            kBuildMode: 'release',
+            kIosArchs: 'arm64',
+            if (withDefine) kShorebirdDdMaxBytes: '100000',
+          },
+          processManager: recorder,
+          artifacts: artifacts,
+          logger: logger,
+          fileSystem: fileSystem,
+        );
+        environment.buildDir.childFile('app.dill').createSync(recursive: true);
+
+        // The recorder fails every process, so the build stops after the
+        // first gen_snapshot run; that run is pass 1 of DD when it's on.
+        await expectLater(const AotAssemblyRelease().build(environment), throwsException);
+        final List<String> first = recorder.commands.first;
+        expect(
+          first.any((String arg) => arg.startsWith('--print_dd_function_identity_to=')),
+          withDefine,
+        );
+      },
+      overrides: <Type, Generator>{
+        FileSystem: () => fileSystem,
+        ProcessManager: () => recorder,
+        Platform: () => macPlatform,
+      },
+    );
+  }
 
   testUsingContext(
     'AotAssemblyRelease throws exception if asked to build for simulator',
@@ -1718,5 +1831,26 @@ class FakeStdio extends Fake implements Stdio {
   @override
   void stderrWrite(String message, {void Function(String, dynamic, StackTrace)? fallback}) {
     buffer.writeln(message);
+  }
+}
+
+/// Records each command started and fails it with exit code 1.
+class _RecordingProcessManager extends Fake implements ProcessManager {
+  final List<List<String>> commands = <List<String>>[];
+
+  @override
+  bool canRun(Object? executable, {String? workingDirectory}) => true;
+
+  @override
+  Future<Process> start(
+    List<Object> command, {
+    String? workingDirectory,
+    Map<String, String>? environment,
+    bool includeParentEnvironment = true,
+    bool runInShell = false,
+    ProcessStartMode mode = ProcessStartMode.normal,
+  }) async {
+    commands.add(command.map((Object arg) => '$arg').toList());
+    return FakeProcess(exitCode: 1);
   }
 }

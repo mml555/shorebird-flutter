@@ -1142,6 +1142,31 @@ class GitTagVersion {
       }
     }
 
+    // Check if running on a Shorebird release branch.
+    final String shorebirdFlutterReleases = git
+        .runSync([
+          'for-each-ref',
+          '--contains',
+          gitRef,
+          '--format',
+          '%(refname:short)',
+          'refs/remotes/origin/flutter_release/*',
+        ], workingDirectory: workingDirectory)
+        .stdout
+        .trim();
+    // A stable branch, X.Y.Z, or a side version, X.Y.Z-sb.N (X.Y.Z with
+    // fixes picked onto it), reported as its own name. X.Y.Z wins when both
+    // hold HEAD. rc branches fall through.
+    final List<String> releaseBranches = LineSplitter.split(
+      shorebirdFlutterReleases,
+    ).map((e) => e.replaceFirst('origin/flutter_release/', '')).toList();
+    final String? shorebirdFlutterVersion =
+        releaseBranches.where(_stableVersionPattern.hasMatch).firstOrNull ??
+        releaseBranches.where(_sideVersionPattern.hasMatch).firstOrNull;
+    if (shorebirdFlutterVersion != null) {
+      return parse(shorebirdFlutterVersion);
+    }
+
     // If we don't exist in a tag, use git to find the latest tag.
     return _useNewestTagAndCommitsPastFallback(
       git: git,
@@ -1191,7 +1216,24 @@ class GitTagVersion {
   /// stable or 1.2.3-4.5.pre for a dev) or the output of `git describe` (e.g.
   /// for commit abc123 that is 6 commits after tag 1.2.3-4.5.pre, git would
   /// return '1.2.3-4.5.pre-6-gabc123').
+  static final _stableVersionPattern = RegExp(r'^\d+\.\d+\.\d+$');
+
+  /// A Shorebird side version, X.Y.Z-sb.N: release X.Y.Z with fixes picked
+  /// onto it, on branch flutter_release/X.Y.Z-sb.N.
+  static final _sideVersionPattern = RegExp(r'^(\d+)\.(\d+)\.(\d+)-sb\.\d+$');
+
   static GitTagVersion parseVersion(String version) {
+    final Match? side = _sideVersionPattern.firstMatch(version.trim());
+    if (side != null) {
+      return GitTagVersion(
+        x: int.parse(side[1]!),
+        y: int.parse(side[2]!),
+        z: int.parse(side[3]!),
+        commits: 0,
+        hash: '',
+        gitTag: version.trim(),
+      );
+    }
     final versionPattern = RegExp(
       r'^(\d+)\.(\d+)\.(\d+)(-\d+\.\d+\.pre)?(?:[-\.](\d+)(?:-g([a-f0-9]+))?)?$',
     );

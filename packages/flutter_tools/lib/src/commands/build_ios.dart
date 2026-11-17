@@ -915,6 +915,7 @@ abstract class _BuildIOSSubCommand extends BuildSubCommand {
       AppleBuildOptionsBundle(),
     ]);
     argParser.addDescriptor(_codesign);
+    usesShorebirdTraceOption(hide: !verboseHelp);
   }
 
   static const _codesign = FlagOptionDescriptor(

@@ -1,0 +1,352 @@
+import("//flutter/common/config.gni")
+import("//flutter/shell/common/shorebird/build_rust_updater.gni")
+import("//flutter/testing/testing.gni")
+import("//flutter/third_party/dart/runtime/runtime_args.gni")
+
+if (is_linux || is_win) {
+  import("//build/config/sysroot.gni")
+  import("//build/toolchain/toolchain.gni")
+}
+
+if (is_ios || is_mac) {
+  import("//build/config/darwin/darwin_sdk.gni")
+}
+
+# Route B attaches bytecode through the Dart VM's dynamic-modules support. Built
+# without it, Dart_RouteBActivatePatchTraced answers "unsupported-build" for
+# every target. The updater would then have promoted a patch that never ran, so
+# refuse the combination at gen time. This lives here, not in config.gni,
+# because dart_dynamic_modules is declared by the Dart runtime's
+# runtime_args.gni, which config.gni does not import.
+assert(!shorebird_route_b || dart_dynamic_modules,
+       "shorebird_route_b requires dart_dynamic_modules = true " +
+           "(pass --dart-dynamic-modules to flutter/tools/gn).")
+
+source_set("snapshots_data_handle") {
+  sources = [
+    "snapshots_data_handle.cc",
+    "snapshots_data_handle.h",
+  ]
+
+  deps = [
+    "//flutter/fml",
+    "//flutter/runtime",
+    "//flutter/runtime:libdart",
+    "//flutter/shell/common",
+  ]
+}
+
+if (shorebird_updater_supported) {
+  action("build_rust_updater") {
+    script = "//flutter/shell/common/shorebird/build_rust_updater.py"
+
+    # The stamp file gives Ninja a deterministic output to depend on, but
+    # we also have to declare the actual static library so consumers
+    # referencing it via `libs = [ shorebird_updater_output_lib ]` find a
+    # rule that produces it. Without the lib in `outputs`, Ninja errors
+    # with `'cargo_target/.../libupdater.a' missing and no known rule to
+    # make it` once the cargo target dir lives inside root_out_dir (#124).
+    _stamp =
+        "$target_gen_dir/rust_updater_${shorebird_updater_rust_target}.stamp"
+    outputs = [
+      _stamp,
+      shorebird_updater_output_lib,
+    ]
+
+    args = [
+      "--rust-target",
+      shorebird_updater_rust_target,
+      "--manifest-dir",
+      rebase_path("$shorebird_updater_dir", root_build_dir),
+      "--target-dir",
+      rebase_path("$shorebird_updater_target_dir", root_build_dir),
+      "--output-lib",
+      rebase_path("$shorebird_updater_output_lib", root_build_dir),
+      "--stamp",
+      rebase_path(_stamp, root_build_dir),
+    ]
+
+    if (is_android) {
+      args += [
+        "--ndk-path",
+        rebase_path(android_ndk_root, root_build_dir),
+        "--android-api-level",
+        "$android_api_level",
+      ]
+    }
+
+    if (is_ios) {
+      # Thread the engine's iOS deployment target into the cargo build so
+      # the cc crate (compiling C deps like zstd-sys) and rustc's cdylib
+      # link step both target the same iOS version as the C++ engine.
+      # Without this, cargo defaults to whatever rustc/cc bake in (rustc's
+      # built-in target spec for aarch64-apple-ios is iOS 10/11, while cc
+      # picks up the host SDK), which causes link warnings and unresolved
+      # symbols like ___chkstk_darwin.
+      args += [
+        "--ios-deployment-target",
+        ios_deployment_target,
+      ]
+    }
+
+    if (is_mac) {
+      args += [
+        "--mac-deployment-target",
+        mac_deployment_target,
+      ]
+    }
+
+    if (is_linux && target_cpu != host_cpu) {
+      # A cross build (linux-arm64 on an x64 host) has no system C compiler
+      # for the target, and ring and zstd-sys compile C. Use the engine's
+      # clang and sysroot, the same ones the C++ engine builds with.
+      if (host_cpu == "arm64") {
+        _clang_dir = "$buildtools_path/linux-arm64/clang/bin"
+      } else {
+        _clang_dir = "$buildtools_path/linux-x64/clang/bin"
+      }
+      args += [
+        "--linux-clang-dir",
+        rebase_path(_clang_dir, root_build_dir),
+        "--linux-sysroot",
+        sysroot,
+      ]
+    }
+
+    if (is_win && target_cpu == "arm64") {
+      # ring compiles its C for Windows on arm64 only with clang (build.rs
+      # falls back to a bare `clang` from PATH otherwise). Name the engine's
+      # clang (the GNU driver; ring overrides clang-cl) so the build doesn't
+      # depend on what LLVM the machine has.
+      args += [
+        "--windows-clang",
+        rebase_path("$buildtools_path/windows-x64/clang/bin/clang.exe",
+                    root_build_dir),
+      ]
+    }
+
+    # Declare inputs so Ninja knows when to re-run the action.
+    inputs = [
+      "$shorebird_updater_dir/Cargo.toml",
+      "$shorebird_updater_dir/Cargo.lock",
+      "$shorebird_updater_dir/library/Cargo.toml",
+      "$shorebird_updater_dir/library/build.rs",
+      "$shorebird_updater_dir/library/cbindgen_dart.toml",
+      "$shorebird_updater_dir/library/cbindgen_engine.toml",
+      "$shorebird_updater_dir/library/.cargo/config.toml",
+    ]
+    inputs += shorebird_updater_rs_sources
+  }
+}
+
+# For the Rust updater's C API header,
+# third_party/updater/library/include/updater_engine.h.
+config("updater_c_api") {
+  include_dirs = [ "//flutter" ]
+}
+
+# What the engine gives the Rust updater: patch signature checks on the
+# engine's BoringSSL, and on iOS, macOS and Android HTTP on the platform's
+# client (see http_client.h). A platform's client adds its sources here and
+# defines SHOREBIRD_PLATFORM_HTTP_CLIENT; without one, `http_request` is null.
+source_set("engine_callbacks") {
+  sources = [
+    "engine_callbacks.cc",
+    "engine_callbacks.h",
+    "http_client.h",
+  ]
+
+  public_configs = [ ":updater_c_api" ]
+  public_deps = [ "//flutter/third_party/boringssl" ]
+
+  if (is_ios || is_mac) {
+    sources += [ "http_client_apple.mm" ]
+    defines = [ "SHOREBIRD_PLATFORM_HTTP_CLIENT" ]
+    cflags_objcc = flutter_cflags_objcc
+    frameworks = [
+      "Foundation.framework",
+      "Security.framework",
+    ]
+  }
+
+  if (is_android) {
+    # The Java half is io/flutter/embedding/engine/ShorebirdHttpClient.java;
+    # JNI_OnLoad calls RegisterHttpClient.
+    sources += [
+      "http_client_android.cc",
+      "http_client_android.h",
+    ]
+    defines = [ "SHOREBIRD_PLATFORM_HTTP_CLIENT" ]
+    deps = [ "//flutter/fml" ]
+  }
+}
+
+# Fetches URLs through the engine's HTTP callback and prints what happened,
+# to build the TLS accept/reject table (see tls_matrix_urls.txt and
+# http_probe.dart). Outside enable_unittests so it builds for the iOS
+# simulator too.
+executable("shorebird_http_probe") {
+  testonly = true
+  sources = [ "http_probe.cc" ]
+  deps = [ ":engine_callbacks" ]
+}
+
+if (shorebird_updater_supported && is_apple) {
+  # Keeps the Rust updater's internals out of Flutter.framework's and
+  # FlutterMacOS.framework's export tables. Without it the framework exports
+  # thousands of Rust symbols, which costs MiBs of symbol table and stops the
+  # linker dead-stripping them. Only the framework dylibs take it: macOS test
+  # executables pass -exported_symbols_list (//flutter:export_dynamic_symbols),
+  # which the linker refuses to combine with -unexported_symbols_list.
+  config("updater_unexported_symbols") {
+    _list = "updater_unexported_symbols.txt"
+    inputs = [ _list ]
+    ldflags =
+        [ "-Wl,-unexported_symbols_list," + rebase_path(_list, root_build_dir) ]
+  }
+}
+
+# C++ wrapper around the Rust updater C API.
+# This provides a testable abstraction layer that can be mocked for testing.
+source_set("updater") {
+  sources = [
+    "updater.cc",
+    "updater.h",
+  ]
+
+  deps = [
+    ":engine_callbacks",
+    "//flutter/fml",
+  ]
+
+  # For the Rust updater C API (shorebird_report_launch_start, etc.)
+  include_dirs = [ "//flutter" ]
+
+  if (shorebird_updater_supported) {
+    deps += [ ":build_rust_updater" ]
+    libs = [ shorebird_updater_output_lib ]
+
+    if (is_win) {
+      libs += [ "userenv.lib" ]
+    }
+  }
+}
+
+# Route B patch containers. Split out from :shorebird so the container reader
+# can be unit-tested without the updater and the whole shell. Always built: it
+# is plain C++, and only shorebird.cc's use of it is behind shorebird_route_b.
+source_set("route_b_patch") {
+  sources = [
+    "route_b_patch.cc",
+    "route_b_patch.h",
+  ]
+
+  deps = [
+    "//flutter/fml",
+    "//flutter/third_party/rapidjson",
+  ]
+}
+
+source_set("shorebird") {
+  sources = [
+    "shorebird.cc",
+    "shorebird.h",
+  ]
+
+  deps = [
+    ":route_b_patch",
+    ":snapshots_data_handle",
+    ":updater",
+    "//flutter/fml",
+    "//flutter/runtime",
+    "//flutter/runtime:libdart",
+    "//flutter/shell/common",
+    "//flutter/shell/platform/embedder:embedder_headers",
+  ]
+}
+
+if (enable_unittests) {
+  # The ownership tests need dlfcn and a library they can watch dyld or the
+  # dynamic loader unload, and no_default_deps below only exists where
+  # BUILDCONFIG.gn wraps shared_library, which is use_flutter_cxx. Both hold
+  # on the hosts this suite is built for and neither holds on Windows,
+  # Fuchsia or QNX, where passing it would fail generation for the whole
+  # build graph.
+  _supports_dlopen_ownership_tests = use_flutter_cxx && (is_mac || is_linux)
+
+  if (_supports_dlopen_ownership_tests) {
+    # A stand-in for App.framework. Reached only through dlopen, so it is a
+    # fixture of the suite below rather than a dep: linking it would hold the
+    # image in the process for the life of the test binary, which is the one
+    # thing the ownership tests need it not to do.
+    shared_library("shorebird_fake_base_snapshot") {
+      testonly = true
+      visibility = [ ":*" ]
+
+      sources = [ "fake_base_snapshot.c" ]
+
+      # The one default dep is //flutter/third_party/libcxx, whose
+      # thread-local storage is enough for dyld to refuse to unload the image,
+      # which fails every assertion here. Observed on macOS; kept bare on
+      # every host because a released App.framework carries a snapshot and
+      # nothing else.
+      no_default_deps = true
+    }
+  }
+
+  test_fixtures("shorebird_fixtures") {
+    fixtures = []
+
+    # The ownership tests find the stand-in through GetFixturesPath(), the way
+    # every engine suite finds its test data. The linker writes it to
+    # root_out_dir, but on Linux run_tests.py runs the binary out of
+    # exe.unstripped/, so "beside the test binary" is a different directory
+    # depending on who launches the suite. The fixtures directory is an
+    # absolute path compiled into the binary, so it is the same for both.
+    if (_supports_dlopen_ownership_tests) {
+      _fake_base_snapshot = "$root_out_dir/libshorebird_fake_base_snapshot"
+      if (is_mac) {
+        _fake_base_snapshot += ".dylib"
+      } else {
+        _fake_base_snapshot += ".so"
+      }
+      fixtures += [ _fake_base_snapshot ]
+      deps = [ ":shorebird_fake_base_snapshot" ]
+    }
+  }
+
+  executable("shorebird_unittests") {
+    testonly = true
+
+    sources = [
+      "engine_callbacks_unittests.cc",
+      "route_b_patch_unittests.cc",
+      "shorebird_unittests.cc",
+      "snapshots_data_handle_unittests.cc",
+      "updater_unittests.cc",
+    ]
+
+    if (_supports_dlopen_ownership_tests) {
+      sources += [ "base_snapshot_ownership_unittests.cc" ]
+    }
+
+    deps = [
+      ":engine_callbacks",
+      ":route_b_patch",
+      ":shorebird",
+      ":shorebird_fixtures",
+      ":snapshots_data_handle",
+      ":updater",
+      "//flutter/runtime",
+      "//flutter/testing",
+      "//flutter/testing:fixture_test",
+    ]
+
+    # SELFHOST: patch_cache needs Shorebird's private Dart; see
+    # shorebird_use_interpreter in common/config.gni.
+    if (shorebird_use_interpreter) {
+      sources += [ "patch_cache_unittests.cc" ]
+      deps += [ "//flutter/runtime/shorebird:patch_cache" ]
+    }
+  }
+}

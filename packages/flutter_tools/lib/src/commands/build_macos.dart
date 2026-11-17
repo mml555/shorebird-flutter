@@ -35,6 +35,7 @@ class BuildMacosCommand extends BuildSubCommand {
       BuildInfoOptions.trackWidgetCreation,
       AppleBuildOptionsBundle.configOnly,
     ], verboseHelp: verboseHelp);
+    usesShorebirdTraceOption(hide: !verboseHelp);
   }
 
   /// The build system used to execute targets.

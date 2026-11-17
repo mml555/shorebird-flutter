@@ -53,6 +53,8 @@
 #include "third_party/skia/include/gpu/ganesh/mock/GrMockTypes.h"
 #include "third_party/tonic/converter/dart_converter.h"
 
+#include "flutter/shell/common/shorebird/updater.h"
+
 #ifdef SHELL_ENABLE_VULKAN
 #include "flutter/vulkan/vulkan_application.h"  // nogncheck
 #endif
@@ -5211,6 +5213,145 @@ TEST_F(ShellTest, ShoulDiscardLayerTreeIfFrameIsSizedIncorrectly) {
                                                 *min_height));
   DestroyShell(std::move(shell), task_runners);
 }
+
+#if !SHOREBIRD_ROUTE_B
+// Test the full boot flow: ReportLaunchStart is called from
+// ResolveIsolateData, then ReportLaunchSuccess from the Shell constructor.
+// Both are guarded to run at most once per process.
+TEST_F(ShellTest, ShorebirdBootFlowCallsLaunchStartThenSuccess) {
+  auto mock = std::make_unique<shorebird::MockUpdater>();
+  auto* mock_ptr = mock.get();
+  shorebird::Updater::SetInstanceForTesting(std::move(mock));
+  shorebird::Updater::ResetLaunchStateForTesting();
+
+  auto settings = CreateSettingsForFixture();
+  auto task_runners = GetTaskRunnersForFixture();
+  auto shell = CreateShell(settings, task_runners);
+  ASSERT_TRUE(shell);
+
+  const auto& log = mock_ptr->call_log();
+  ASSERT_EQ(log.size(), 2u);
+  EXPECT_EQ(log[0], "ReportLaunchStart");
+  EXPECT_EQ(log[1], "ReportLaunchSuccess");
+
+  DestroyShell(std::move(shell), task_runners);
+  shorebird::Updater::ResetLaunchStateForTesting();
+  shorebird::Updater::ResetInstanceForTesting();
+}
+
+// In add-to-app, multiple engines may be created within a single process.
+// Only the first engine should report launch start/success to the Rust
+// updater. This prevents the updater from promoting a newly-downloaded patch
+// to "current_boot" when subsequent engines are still running the original
+// snapshot that was selected at process init time.
+TEST_F(ShellTest, ShorebirdUpdaterReportsOnlyOnceForMultipleShells) {
+  auto mock = std::make_unique<shorebird::MockUpdater>();
+  auto* mock_ptr = mock.get();
+  shorebird::Updater::SetInstanceForTesting(std::move(mock));
+  shorebird::Updater::ResetLaunchStateForTesting();
+
+  auto settings = CreateSettingsForFixture();
+
+  // Create first shell — gets Start + Success
+  auto task_runners1 = GetTaskRunnersForFixture();
+  auto shell1 = CreateShell(settings, task_runners1);
+  ASSERT_TRUE(shell1);
+  EXPECT_EQ(mock_ptr->launch_start_count(), 1);
+  EXPECT_EQ(mock_ptr->launch_success_count(), 1);
+
+  // The guard is per process, so the second shell need not overlap the
+  // first. Destroying the first shell before creating the second keeps the
+  // test from running two GL test surfaces at once: on Linux they share one
+  // EGL display, and the first one's teardown terminates it under the second.
+  DestroyShell(std::move(shell1), task_runners1);
+
+  // Create second shell — guarded, no additional Start or Success calls.
+  auto task_runners2 = GetTaskRunnersForFixture();
+  auto shell2 = CreateShell(settings, task_runners2);
+  ASSERT_TRUE(shell2);
+  EXPECT_EQ(mock_ptr->launch_start_count(), 1);
+  EXPECT_EQ(mock_ptr->launch_success_count(), 1);
+
+  // Only one Start+Success pair in the call log.
+  const auto& log = mock_ptr->call_log();
+  ASSERT_EQ(log.size(), 2u);
+  EXPECT_EQ(log[0], "ReportLaunchStart");
+  EXPECT_EQ(log[1], "ReportLaunchSuccess");
+
+  DestroyShell(std::move(shell2), task_runners2);
+
+  shorebird::Updater::ResetLaunchStateForTesting();
+  shorebird::Updater::ResetInstanceForTesting();
+}
+
+#else  // SHOREBIRD_ROUTE_B
+
+// A Route B engine: creating a Shell makes NO updater lifecycle call.
+//
+// Boot preparation and attribution are Updater::PrepareNextBootPatch(), made
+// from ConfigureShorebird, which a shell test cannot reach (the
+// ConfigureShorebird tests live in shorebird_unittests.cc). So what a shell
+// test can prove is the ABSENCE: no snapshot-resolution path may re-enter the
+// updater's launch lifecycle (a start from there is a second reading of the
+// candidate pointer), and success is not banked before user Dart has had its
+// chance, because success and failure share ONE latch and a success recorded
+// here would make the Dart report unreachable. Success comes from Dart
+// (lib/ui/hooks.dart), which no shell test runs.
+TEST_F(ShellTest, ShorebirdShellCreationMakesNoUpdaterLifecycleCalls) {
+  auto mock = std::make_unique<shorebird::MockUpdater>();
+  auto* mock_ptr = mock.get();
+  shorebird::Updater::SetInstanceForTesting(std::move(mock));
+  shorebird::Updater::ResetLaunchStateForTesting();
+
+  auto settings = CreateSettingsForFixture();
+  auto task_runners = GetTaskRunnersForFixture();
+  auto shell = CreateShell(settings, task_runners);
+  ASSERT_TRUE(shell);
+
+  EXPECT_TRUE(mock_ptr->call_log().empty())
+      << "boot preparation belongs to ConfigureShorebird, not to snapshot "
+         "resolution";
+  EXPECT_EQ(mock_ptr->prepare_count(), 0);
+  EXPECT_EQ(mock_ptr->launch_start_count(), 0);
+  EXPECT_EQ(mock_ptr->launch_success_count(), 0);
+  EXPECT_EQ(mock_ptr->launch_failure_count(), 0);
+
+  DestroyShell(std::move(shell), task_runners);
+  shorebird::Updater::ResetLaunchStateForTesting();
+  shorebird::Updater::ResetInstanceForTesting();
+}
+
+// The add-to-app shape: several engines in one process, and none of them
+// reaches the launch lifecycle from Shell creation.
+TEST_F(ShellTest, ShorebirdMultipleShellsMakeNoUpdaterLifecycleCalls) {
+  auto mock = std::make_unique<shorebird::MockUpdater>();
+  auto* mock_ptr = mock.get();
+  shorebird::Updater::SetInstanceForTesting(std::move(mock));
+  shorebird::Updater::ResetLaunchStateForTesting();
+
+  auto settings = CreateSettingsForFixture();
+
+  auto task_runners1 = GetTaskRunnersForFixture();
+  auto shell1 = CreateShell(settings, task_runners1);
+  ASSERT_TRUE(shell1);
+  EXPECT_TRUE(mock_ptr->call_log().empty());
+  // See ShorebirdUpdaterReportsOnlyOnceForMultipleShells for why the first
+  // shell is gone before the second exists.
+  DestroyShell(std::move(shell1), task_runners1);
+
+  auto task_runners2 = GetTaskRunnersForFixture();
+  auto shell2 = CreateShell(settings, task_runners2);
+  ASSERT_TRUE(shell2);
+  EXPECT_TRUE(mock_ptr->call_log().empty());
+  EXPECT_EQ(mock_ptr->launch_success_count(), 0);
+
+  DestroyShell(std::move(shell2), task_runners2);
+
+  shorebird::Updater::ResetLaunchStateForTesting();
+  shorebird::Updater::ResetInstanceForTesting();
+}
+
+#endif  // SHOREBIRD_ROUTE_B
 
 }  // namespace testing
 }  // namespace flutter

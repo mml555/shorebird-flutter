@@ -29,6 +29,7 @@ class BuildWindowsCommand extends BuildSubCommand {
     required this._visualStudio,
   }) : super(logger: toolContext.logger, outputPreferences: toolContext.outputPreferences) {
     registerOptionBundles(const <OptionBundle>[DesktopBuildOptionsBundle()]);
+    usesShorebirdTraceOption(hide: !verboseHelp);
   }
 
   final BuildSystem buildSystem;

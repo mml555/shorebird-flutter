@@ -43,6 +43,7 @@ class BuildAppBundleCommand extends BuildSubCommand {
       _deferredComponents,
       _validateDeferredComponents,
     ]);
+    usesShorebirdTraceOption(hide: !verboseHelp);
   }
 
   static const _targetPlatform = MultiOptionDescriptor(

@@ -5,15 +5,21 @@
 #include "flutter/shell/platform/windows/flutter_windows_engine.h"
 
 #include <dwmapi.h>
+#include <shlobj.h>
+#include <windows.h>
+#include <winerror.h>
 
 #include <filesystem>
 #include <shared_mutex>
 #include <sstream>
+#include <string>
 
 #include "flutter/fml/logging.h"
+#include "flutter/fml/mapping.h"
 #include "flutter/fml/paths.h"
 #include "flutter/fml/platform/win/wstring_conversion.h"
 #include "flutter/fml/synchronization/waitable_event.h"
+#include "flutter/shell/common/shorebird/shorebird.h"
 #include "flutter/shell/platform/common/client_wrapper/binary_messenger_impl.h"
 #include "flutter/shell/platform/common/client_wrapper/include/flutter/standard_message_codec.h"
 #include "flutter/shell/platform/common/path_utils.h"
@@ -285,6 +291,130 @@ bool FlutterWindowsEngine::Run() {
   return Run("");
 }
 
+int GetReleaseVersionAndBuildNumber(ReleaseVersion* release_version) {
+  // The wide APIs, since the ANSI ones can't represent every path.
+  wchar_t module_path[MAX_PATH];
+  // Get the full path of the currently running executable. The return value is
+  // the size of the string that was copied to the buffer, with 0 indicating
+  // failure.
+  if (GetModuleFileNameW(NULL, module_path, MAX_PATH) == 0) {
+    return -1;
+  }
+
+  // Get the size of the version information
+  DWORD handle = 0;
+  DWORD version_info_size = GetFileVersionInfoSizeW(module_path, &handle);
+  if (version_info_size == 0) {
+    return -1;
+  }
+
+  // Allocate memory for version info
+  std::unique_ptr<char[]> version_data(new char[version_info_size]);
+  if (!GetFileVersionInfoW(module_path, handle, version_info_size,
+                           version_data.get())) {
+    return -1;
+  }
+
+  // Adopted from
+  // https://learn.microsoft.com/en-us/windows/win32/api/winver/nf-winver-verqueryvaluea
+  // Get the translation table
+  struct LANGANDCODEPAGE {
+    WORD wLanguage;
+    WORD wCodePage;
+  }* lpTranslate;
+
+  UINT cbTranslate = 0;
+  if (!VerQueryValueW(version_data.get(), L"\\VarFileInfo\\Translation",
+                      (LPVOID*)&lpTranslate, &cbTranslate)) {
+    FML_LOG(ERROR) << "Error: Unable to get translation info.";
+    return -1;
+  }
+
+  // Construct the query string using the first translation found
+  wchar_t subBlock[64];
+  swprintf_s(subBlock, L"\\StringFileInfo\\%04x%04x\\ProductVersion",
+             lpTranslate[0].wLanguage, lpTranslate[0].wCodePage);
+
+  LPWSTR versionString = nullptr;
+  UINT size = 0;
+  if (!VerQueryValueW(version_data.get(), subBlock, (LPVOID*)&versionString,
+                      &size)) {
+    return -1;
+  }
+
+  if (!versionString) {
+    return -1;
+  }
+
+  // The version string is in the format of "1.0.0+1", with the label ("+1")
+  // being optional.
+  auto version = fml::WideStringToUtf8(versionString);
+  auto plusPos = version.find("+");
+  if (plusPos != std::string::npos) {
+    auto semVer = version.substr(0, plusPos);
+    auto patch = version.substr(plusPos + 1, version.length());
+    release_version->version = semVer;
+    release_version->build_number = patch;
+  } else {
+    release_version->version = version;
+  }
+
+  return kSuccess;
+}
+
+bool GetLocalAppDataPath(std::string& outPath) {
+  PWSTR path = nullptr;
+  HRESULT result = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, NULL, &path);
+  if (!SUCCEEDED(result)) {
+    return false;
+  }
+
+  // The updater takes UTF-8 paths.
+  outPath = fml::WideStringToUtf8(path);
+  // The calling process is responsible for freeing this resource
+  // https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath
+  CoTaskMemFree(path);
+  return true;
+}
+
+bool SetUpShorebird(std::string assets_path_string, std::string& patch_path) {
+  auto shorebird_yaml_path =
+      fml::paths::JoinPaths({assets_path_string, "shorebird.yaml"});
+  // fml opens the UTF-8 path as wide; tonic's ReadFileToString would decode
+  // it as the ANSI code page.
+  auto shorebird_yaml = fml::FileMapping::CreateReadOnly(shorebird_yaml_path);
+  if (!shorebird_yaml || !shorebird_yaml->GetMapping()) {
+    FML_LOG(ERROR) << "Failed to read shorebird.yaml.";
+    return false;
+  }
+  std::string shorebird_yaml_contents(
+      reinterpret_cast<const char*>(shorebird_yaml->GetMapping()),
+      shorebird_yaml->GetSize());
+
+  std::string code_cache_path;
+  if (!GetLocalAppDataPath(code_cache_path)) {
+    FML_LOG(ERROR) << "Failed to retrieve the local AppData directory.";
+    return false;
+  }
+
+  auto executable_location = fml::paths::GetExecutableDirectoryPath().second;
+  auto app_path =
+      fml::paths::JoinPaths({executable_location, "data", "app.so"});
+  ReleaseVersion release_version;
+  auto release_version_result =
+      GetReleaseVersionAndBuildNumber(&release_version);
+  if (release_version_result != kSuccess) {
+    FML_LOG(ERROR)
+        << "Failed to retrieve the release version and build number.";
+    return false;
+  }
+
+  ShorebirdConfigArgs shorebird_args(code_cache_path, code_cache_path,
+                                     {app_path}, shorebird_yaml_contents,
+                                     release_version);
+  return ConfigureShorebird(shorebird_args, patch_path);
+}
+
 bool FlutterWindowsEngine::Run(std::string_view entrypoint) {
   if (!project_->HasValidPaths()) {
     FML_LOG(ERROR) << "Missing or unresolvable paths to assets.";
@@ -292,8 +422,29 @@ bool FlutterWindowsEngine::Run(std::string_view entrypoint) {
   }
   std::string assets_path_string = fml::PathToUtf8(project_->assets_path());
   std::string icu_path_string = fml::PathToUtf8(project_->icu_path());
+
+  std::string patch_path;
+  if (!SetUpShorebird(assets_path_string, patch_path)) {
+    FML_LOG(ERROR) << "Failed to configure Shorebird.";
+    patch_path.clear();
+  }
+
+  // This loads AOT data from the project_'s aot_library_path_. A patch that
+  // fails to load is reported and replaced by the release's own library.
   if (embedder_api_.RunsAOTCompiledDartCode()) {
-    aot_data_ = project_->LoadAotData(embedder_api_);
+    const std::filesystem::path base_path = project_->aot_library_path();
+    LoadPatchOrBase(
+        patch_path, fml::PathToUtf8(base_path), [&](const std::string& path) {
+          // The patch path is UTF-8, which a narrow std::filesystem::path
+          // would decode as the ANSI code page. The base keeps its own
+          // path object.
+          project_->SetAotLibraryPath(
+              path == patch_path
+                  ? std::filesystem::path(fml::Utf8ToWideString(path))
+                  : base_path);
+          aot_data_ = project_->LoadAotData(embedder_api_);
+          return aot_data_ != nullptr;
+        });
     if (!aot_data_) {
       FML_LOG(ERROR) << "Unable to start engine without AOT data.";
       return false;
@@ -461,6 +612,15 @@ bool FlutterWindowsEngine::Run(std::string_view entrypoint) {
     if (host->root_isolate_create_callback_) {
       host->root_isolate_create_callback_();
     }
+  };
+  // Copied from shell\platform\darwin\macos\framework\Source\FlutterEngine.mm
+  // Writes log messages to stdout.
+  args.log_message_callback = [](const char* tag, const char* message,
+                                 void* user_data) {
+    if (tag && tag[0]) {
+      std::cout << tag << ": ";
+    }
+    std::cout << message << std::endl;
   };
   args.channel_update_callback = [](const FlutterChannelUpdate* update,
                                     void* user_data) {

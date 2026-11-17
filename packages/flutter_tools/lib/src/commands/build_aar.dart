@@ -48,6 +48,7 @@ class BuildAarCommand extends BuildSubCommand {
       _targetPlatform,
       BuildInfoOptions.trackWidgetCreation,
     ], verboseHelp: verboseHelp);
+    usesShorebirdTraceOption(hide: !verboseHelp);
   }
 
   static const _debugMode = FlagOptionDescriptor(

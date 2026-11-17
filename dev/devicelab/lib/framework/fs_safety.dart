@@ -38,46 +38,62 @@ bool _isDangerousDirectory(String dirPath) {
   return false;
 }
 
-/// Canonicalizes [p] and normalizes standard root symlink aliases on macOS.
+/// [entityPath] with symlinks resolved.
 ///
-/// On macOS (Darwin), system root directories `/var`, `/tmp`, and `/etc` are
-/// symlinks to `/private/var`, `/private/tmp`, and `/private/etc` respectively
-/// (with Darwin per-user `$TMPDIR` located under `/var/folders/...`).
-///
-/// Normalizing these prefixes at the string level ensures consistent prefix
-/// matching against the resolved temporary directory without performing costly
-/// filesystem syscalls (`resolveSymbolicLinksSync`) or failing when validating
-/// paths to files/directories that do not exist yet.
-String _canonicalize(String p) {
-  final String canonical = path.canonicalize(p);
-  if (io.Platform.isMacOS) {
-    if (canonical.startsWith('/var/') || canonical == '/var') {
-      return '/private$canonical';
-    }
-    if (canonical.startsWith('/tmp/') || canonical == '/tmp') {
-      return '/private$canonical';
-    }
-    if (canonical.startsWith('/etc/') || canonical == '/etc') {
-      return '/private$canonical';
+/// Paths are routinely checked before they exist, and `resolveSymbolicLinksSync`
+/// throws on a missing path, so this resolves the nearest existing ancestor and
+/// re-appends the rest. Returns null when no ancestor resolves.
+String? _resolveExistingPrefix(String entityPath) {
+  final tail = <String>[];
+  var current = entityPath;
+  while (true) {
+    try {
+      final String resolved = io.Directory(current).resolveSymbolicLinksSync();
+      return path.canonicalize(
+        tail.isEmpty ? resolved : path.joinAll(<String>[resolved, ...tail.reversed]),
+      );
+    } on io.FileSystemException {
+      final String parent = path.dirname(current);
+      if (parent == current) {
+        return null;
+      }
+      tail.add(path.basename(current));
+      current = parent;
     }
   }
-  return canonical;
 }
 
 bool _isAllowedPath(String entityPath) {
-  final String canonicalEntity = _canonicalize(entityPath);
+  final String canonicalEntity = path.canonicalize(entityPath);
 
-  // Allow system temp
-  String canonicalTemp;
+  // Allow system temp. Callers reach temp by either name: `Directory.systemTemp`
+  // reports macOS's /var/folders/... while anything that resolves the path first
+  // yields /private/var/folders/.... `path.canonicalize` does not touch symlinks,
+  // so matching only one form rejects the other.
+  final List<String> canonicalTemps;
   final io.IOOverrides? currentOverrides = io.IOOverrides.current;
   if (currentOverrides is FSGuardIOOverrides) {
-    canonicalTemp = currentOverrides._canonicalSystemTemp;
+    canonicalTemps = currentOverrides._canonicalSystemTemps;
   } else {
-    canonicalTemp = _canonicalize(io.Directory.systemTemp.path);
+    canonicalTemps = <String>[path.canonicalize(io.Directory.systemTemp.path)];
   }
 
-  if (path.isWithin(canonicalTemp, canonicalEntity) || canonicalEntity == canonicalTemp) {
-    return true;
+  for (final canonicalTemp in canonicalTemps) {
+    if (path.isWithin(canonicalTemp, canonicalEntity) || canonicalEntity == canonicalTemp) {
+      return true;
+    }
+  }
+
+  // A symlink anywhere in the path, not just the macOS /var -> /private/var
+  // head, leaves the two sides spelled differently. Resolving costs I/O, so it
+  // runs only on paths the string comparison above already rejected.
+  final String? resolvedEntity = _resolveExistingPrefix(canonicalEntity);
+  if (resolvedEntity != null) {
+    for (final canonicalTemp in canonicalTemps) {
+      if (path.isWithin(canonicalTemp, resolvedEntity) || resolvedEntity == canonicalTemp) {
+        return true;
+      }
+    }
   }
 
   // Allow modifications inside the Flutter installation root itself
@@ -600,15 +616,20 @@ final class FSGuardIOOverrides extends io.IOOverrides {
 
   final io.IOOverrides? _parent;
 
-  late final String _canonicalSystemTemp = () {
+  late final List<String> _canonicalSystemTemps = () {
     final io.Directory rawTemp = _parent != null
         ? _parent.getSystemTempDirectory()
         : super.getSystemTempDirectory();
+    final String rawCanonical = path.canonicalize(rawTemp.path);
     try {
-      return _canonicalize(rawTemp.resolveSymbolicLinksSync());
+      final String resolved = path.canonicalize(rawTemp.resolveSymbolicLinksSync());
+      if (resolved != rawCanonical) {
+        return <String>[rawCanonical, resolved];
+      }
     } on Object catch (_) {
-      return _canonicalize(rawTemp.path);
+      // Temp is unreadable; the unresolved form is the best available answer.
     }
+    return <String>[rawCanonical];
   }();
 
   @override

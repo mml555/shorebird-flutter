@@ -45,6 +45,7 @@ class BuildLinuxCommand extends BuildSubCommand {
       help: 'The target platform for which the app is compiled.',
     );
     registerOptionBundles(const <OptionBundle>[DesktopBuildOptionsBundle()]);
+    usesShorebirdTraceOption(hide: !verboseHelp);
     argParser.addDescriptors(<OptionDescriptor<Object?>>[
       _targetPlatformOption,
       _targetSysroot,

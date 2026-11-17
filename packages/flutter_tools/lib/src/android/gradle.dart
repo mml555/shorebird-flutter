@@ -34,6 +34,7 @@ import '../convert.dart';
 import '../flutter_manifest.dart';
 import '../globals.dart' as globals;
 import '../project.dart';
+import '../shorebird/android_build_trace_session.dart';
 import 'android_builder.dart';
 import 'android_sdk.dart';
 import 'android_studio.dart';
@@ -299,6 +300,7 @@ class AndroidGradleBuilder implements AndroidBuilder {
     VoidCallback? postRunTask,
     int? maxRetries,
     _OutputParser? outputParser,
+    void Function(Process process)? onStart,
   }) async {
     final bool usesAndroidX = isAppUsingAndroidX(project.android.hostAppGradleRoot);
     final String? agpVersion = gradle.getAgpVersion(
@@ -365,6 +367,7 @@ class AndroidGradleBuilder implements AndroidBuilder {
         allowReentrantFlutter: true,
         environment: _java?.gradleEnvironment,
         mapFunction: consumeLog,
+        onStart: onStart,
       );
     } on ProcessException catch (exception) {
       consumeLog(exception.toString());
@@ -554,7 +557,12 @@ To fix this, you can either:
       return;
     }
 
-    // Assembly work starts here.
+    final AndroidBuildTraceSession? traceSession = AndroidBuildTraceSession.maybeStart(
+      androidBuildInfo,
+      _fileSystem,
+      project.android.buildDirectory,
+    );
+
     final BuildInfo buildInfo = androidBuildInfo.buildInfo;
     final String assembleTask = isBuildingBundle
         ? getBundleTaskFor(buildInfo)
@@ -639,6 +647,7 @@ To fix this, you can either:
       }
     }
     options.addAll(androidBuildInfo.buildInfo.toGradleConfig());
+    options.addAll(traceSession?.extraGradleOptions(assembleTask) ?? const <String>[]);
     if (buildInfo.fileSystemRoots.isNotEmpty) {
       options.add('-Pfilesystem-roots=${buildInfo.fileSystemRoots.join('|')}');
     }
@@ -654,8 +663,10 @@ To fix this, you can either:
     final int exitCode = await _runGradleTask(
       assembleTask,
       preRunTask: () {
+        traceSession?.onGradleAboutToStart();
         sw = Stopwatch()..start();
       },
+      onStart: (process) => traceSession?.onGradleSpawn(process),
       postRunTask: () {
         final Duration elapsedDuration = sw.elapsed;
         _analytics.send(
@@ -673,13 +684,23 @@ To fix this, you can either:
       gradleExecutablePath: gradleExecutablePath,
     );
 
+    traceSession?.onGradleFinished(assembleTask);
+
     if (exitCode != 0) {
+      // Abort the trace before the compatibility check, which exits the tool on
+      // an incompatible pair and would otherwise strand the session.
+      traceSession?.abortOnGradleFailure();
       await _checkJavaAndGradleCompatibility(project, androidBuildInfo.buildInfo);
       throwToolExit(
         'Gradle task $assembleTask failed with exit code $exitCode',
         exitCode: exitCode,
       );
     }
+
+    traceSession?.finish(
+      buildTarget: isBuildingBundle ? 'appbundle' : 'apk',
+      printStatus: _logger.printStatus,
+    );
 
     if (isBuildingBundle) {
       final File bundleFile = findBundleFile(project, buildInfo, _logger, _analytics);
@@ -803,10 +824,26 @@ To fix this, you can either:
     }
 
     if (!(result.stdout.contains('libapp.so.sym') || result.stdout.contains('libapp.so.dbg'))) {
-      _logger.printTrace(
-        'libapp.so.sym or libapp.so.dbg not present when checking final appbundle for debug symbols.',
+      // Shorebird-specific: demote upstream's fatal check to a warning.
+      //
+      // Upstream Flutter PR #181275 (3.44) inverted libapp.so strip
+      // responsibility — Flutter stopped stripping it, AGP is expected to,
+      // and this check fails the build if `.sym/.dbg` is absent. Apps that
+      // keep libapp.so unstripped (legacy `keepDebugSymbols.add("**/libapp.so")`)
+      // or pass `--strip` to gen_snapshot themselves (e.g.
+      // `--extra-gen-snapshot-options=--strip`) produce AABs without
+      // `libapp.so.sym`. Returning `true` here lets the
+      // build succeed; the trade-off is that Play Console won't get Dart
+      // crash symbols for these AABs. New apps should remove the legacy
+      // `keepDebugSymbols` line to re-enable AGP-side stripping.
+      _logger.printWarning(
+        'libapp.so.sym or libapp.so.dbg not present when checking final '
+        'appbundle for debug symbols. Play Console will not receive Dart '
+        'crash symbols for this build. To enable, remove '
+        '`packaging.jniLibs.keepDebugSymbols.add("**/libapp.so")` from '
+        'android/app/build.gradle.kts.',
       );
-      return false;
+      return true;
     }
 
     return true;
@@ -873,6 +910,16 @@ To fix this, you can either:
     final BuildInfo buildInfo = androidBuildInfo.buildInfo;
     final String aarTask = getAarTaskFor(buildInfo);
     final Status status = _logger.startProgress("Running Gradle task '$aarTask'...");
+
+    // When a caller runs `flutter build aar` multiple modes in one
+    // invocation (debug + profile + release), each iteration's trace
+    // overwrites the previous one. Shorebird's release flow only
+    // builds release mode, so this isn't a concern in practice.
+    final AndroidBuildTraceSession? traceSession = AndroidBuildTraceSession.maybeStart(
+      androidBuildInfo,
+      _fileSystem,
+      project.android.buildDirectory,
+    );
 
     final String flutterRoot = _fileSystem.path.absolute(Cache.flutterRoot!);
     final String initScript = _fileSystem.path.join(
@@ -948,8 +995,10 @@ To fix this, you can either:
       command.add('-Ptarget-platform=$targetPlatforms');
     }
 
+    command.addAll(traceSession?.extraGradleOptions(aarTask) ?? const <String>[]);
     command.add(aarTask);
 
+    traceSession?.onGradleAboutToStart();
     final sw = Stopwatch()..start();
     RunResult result;
     try {
@@ -971,7 +1020,10 @@ To fix this, you can either:
       ),
     );
 
+    traceSession?.onGradleFinished(aarTask);
+
     if (result.exitCode != 0) {
+      traceSession?.abortOnGradleFailure();
       _logger.printStatus(result.stdout, wrap: false);
       _logger.printError(result.stderr, wrap: false);
       await _checkJavaAndGradleCompatibility(project, androidBuildInfo.buildInfo);
@@ -982,10 +1034,12 @@ To fix this, you can either:
     }
     final Directory repoDirectory = getRepoDirectory(outputDirectory);
     if (!repoDirectory.existsSync()) {
+      traceSession?.abortOnGradleFailure();
       _logger.printStatus(result.stdout, wrap: false);
       _logger.printError(result.stderr, wrap: false);
       throwToolExit('Gradle task $aarTask failed to produce $repoDirectory.', exitCode: exitCode);
     }
+    traceSession?.finish(buildTarget: 'aar', printStatus: _logger.printStatus);
     _logger.printStatus(
       '${_logger.terminal.successMark} '
       'Built ${_fileSystem.path.relative(repoDirectory.path)}',

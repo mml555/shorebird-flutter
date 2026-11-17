@@ -114,10 +114,19 @@ source_set("runtime") {
     "//flutter/fml",
     "//flutter/lib/io",
     "//flutter/shell/common:display",
+    "//flutter/shell/common/shorebird:updater",
     "//flutter/skia",
     "//flutter/third_party/tonic",
     "//flutter/txt",
   ]
+
+  # SELFHOST: follow shorebird_use_interpreter rather than is_ios. patch_cache.cc
+  # is the only thing in the tree that needs Shorebird's private Dart fork, and
+  # dart_snapshot.cc already includes its header under the same #if, so gating the
+  # dep here is what lets an iOS engine link against this fork's Dart.
+  if (shorebird_use_interpreter) {
+    deps += [ "//flutter/runtime/shorebird:patch_cache" ]
+  }
 }
 
 if (enable_unittests) {

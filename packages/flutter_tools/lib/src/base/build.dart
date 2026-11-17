@@ -8,7 +8,6 @@ import '../artifacts.dart';
 import '../build_info.dart';
 import '../darwin/darwin.dart';
 import '../macos/xcode.dart';
-
 import 'file_system.dart';
 import 'logger.dart';
 import 'process.dart';
@@ -27,10 +26,13 @@ class SnapshotType {
 /// Interface to the gen_snapshot command-line tool.
 class GenSnapshot {
   GenSnapshot({
-    required this._artifacts,
+    required Artifacts artifacts,
     required ProcessManager processManager,
     required Logger logger,
-  }) : _processUtils = ProcessUtils(logger: logger, processManager: processManager);
+    required FileSystem fileSystem,
+  }) : _artifacts = artifacts,
+       _fileSystem = fileSystem,
+       _processUtils = ProcessUtils(logger: logger, processManager: processManager);
 
   final Artifacts _artifacts;
   final ProcessUtils _processUtils;
@@ -54,12 +56,76 @@ class GenSnapshot {
     '         See dartbug.com/30524 for more information.',
   };
 
+  /// Returns the path to an analyze_snapshot binary that matches gen_snapshot's
+  /// SDK version, or null if no matching binary can be found.
+  ///
+  /// gen_snapshot and analyze_snapshot share a snapshot-format hash baked into
+  /// each binary; if the hashes disagree, analyze_snapshot rejects gen_snapshot's
+  /// output with "Wrong full snapshot version" at parse time. Pre-existing binary
+  /// layouts (e.g. an older `universal/analyze_snapshot_<arch>` left behind from
+  /// a previous BUILD.gn revision) can shadow the freshly built one. Resolve by
+  /// probing every candidate location and returning only the one whose
+  /// `--sdk_version` matches gen_snapshot's `--version` output.
+  String? getAnalyzeSnapshotPath(SnapshotType snapshotType, CpuArch? cpuArch) {
+    final Artifact genSnapshotArtifact;
+    final String analyzeName;
+    if (snapshotType.platform.os case .ios || .macos) {
+      if (cpuArch == CpuArch.arm64) {
+        genSnapshotArtifact = Artifact.genSnapshotArm64;
+        analyzeName = 'analyze_snapshot_arm64';
+      } else {
+        genSnapshotArtifact = Artifact.genSnapshotX64;
+        analyzeName = 'analyze_snapshot_x64';
+      }
+    } else {
+      genSnapshotArtifact = Artifact.genSnapshot;
+      analyzeName = 'analyze_snapshot';
+    }
+    final String genSnapshotPath = getSnapshotterPath(snapshotType, genSnapshotArtifact);
+    final String? genVersion = _probeSdkVersion(genSnapshotPath, '--version');
+    final String dir = _fileSystem.path.dirname(genSnapshotPath);
+    // Cached SDK layout puts analyze_snapshot alongside gen_snapshot. Local
+    // engine layout resolves gen_snapshot via .../universal/gen_snapshot_arm64
+    // while analyze_snapshot lives one level up at the build-dir root. Probe
+    // both. If we successfully read gen_snapshot's version, accept only a
+    // candidate whose --sdk_version matches; otherwise fall back to the first
+    // existing candidate (better than failing closed when the version probe
+    // itself misbehaves).
+    for (final candidate in <String>[
+      _fileSystem.path.join(dir, analyzeName),
+      _fileSystem.path.join(dir, '..', analyzeName),
+    ]) {
+      if (!_fileSystem.file(candidate).existsSync()) {
+        continue;
+      }
+      if (genVersion == null) {
+        return candidate;
+      }
+      final String? candidateVersion = _probeSdkVersion(candidate, '--sdk_version');
+      if (candidateVersion == genVersion) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  /// Runs [binary] with [versionFlag] and returns the trimmed stderr output,
+  /// or null if the binary couldn't be invoked or printed nothing.
+  /// gen_snapshot and analyze_snapshot both write their version line to stderr.
+  String? _probeSdkVersion(String binary, String versionFlag) {
+    try {
+      final RunResult result = _processUtils.runSync(<String>[binary, versionFlag]);
+      final String stderr = result.stderr.trim();
+      return stderr.isEmpty ? null : stderr;
+    } on Exception {
+      return null;
+    }
+  }
+
+  final FileSystem _fileSystem;
+
   Future<int> run({
     required SnapshotType snapshotType,
-    // TODO(chingjun): The [CpuArch] parameter is only used for iOS builds (to
-    // select the correct per-architecture gen_snapshot). This architecture
-    // information should instead be consolidated into [TargetPlatform] so that
-    // callers do not need to pass it separately.
     CpuArch? cpuArch,
     Iterable<String> additionalArgs = const <String>[],
   }) {
@@ -90,21 +156,34 @@ class GenSnapshot {
 
 class AOTSnapshotter {
   AOTSnapshotter({
-    required Artifacts artifacts,
-    required this._fileSystem,
     required Logger logger,
+    required FileSystem fileSystem,
+    Xcode? xcode,
     required ProcessManager processManager,
-    this._xcode,
+    required Artifacts artifacts,
   }) : _logger = logger,
+       _fileSystem = fileSystem,
+       _xcode = xcode,
+       _processUtils = ProcessUtils(logger: logger, processManager: processManager),
        _genSnapshot = GenSnapshot(
          artifacts: artifacts,
          processManager: processManager,
          logger: logger,
+         fileSystem: fileSystem,
        );
 
   final Logger _logger;
   final FileSystem _fileSystem;
   final Xcode? _xcode;
+
+  Xcode get _requiredXcode {
+    final Xcode? xcode = _xcode;
+    if (xcode == null) {
+      throw StateError('Xcode must be provided when targeting Apple platforms.');
+    }
+    return xcode;
+  }
+  final ProcessUtils _processUtils;
   final GenSnapshot _genSnapshot;
 
   /// Builds an architecture-specific ahead-of-time compiled snapshot of the specified script.
@@ -119,6 +198,9 @@ class AOTSnapshotter {
     String? splitDebugInfo,
     required bool dartObfuscation,
     bool quiet = false,
+    // Shorebird: the cap on the DD table, from kShorebirdDdMaxBytes. 0 means
+    // no DD pass.
+    int ddMaxBytes = 0,
   }) async {
     assert(platform != TargetPlatform.ios || cpuArch != null);
 
@@ -130,7 +212,27 @@ class AOTSnapshotter {
     final Directory outputDir = _fileSystem.directory(outputPath);
     outputDir.createSync(recursive: true);
 
-    final genSnapshotArgs = <String>['--deterministic'];
+    // Currently we only use the linker on iOS, but we will eventually split out
+    // the concept of "optimizes patch snapshot" from "uses linker" and probably
+    // only uses the linker on iOS, but optimize patch snapshots everywhere.
+    // TODO(eseidel): TargetPlatform.darwin doesn't use the linker.
+    final bool usesLinker = platform == TargetPlatform.ios || platform == TargetPlatform.darwin;
+    final dumpLinkInfoArgs = <String>[
+      // Shorebird dumps the class table information during snapshot compilation which is later used during linking.
+      '--print_class_table_link_debug_info_to=${_fileSystem.path.join(outputDir.parent.path, 'App.class_table.json')}',
+      '--print_class_table_link_info_to=${_fileSystem.path.join(outputDir.parent.path, 'App.ct.link')}',
+      '--print_field_table_link_debug_info_to=${_fileSystem.path.join(outputDir.parent.path, 'App.field_table.json')}',
+      '--print_field_table_link_info_to=${_fileSystem.path.join(outputDir.parent.path, 'App.ft.link')}',
+      '--print_dispatch_table_link_debug_info_to=${_fileSystem.path.join(outputDir.parent.path, 'App.dispatch_table.json')}',
+      '--print_dispatch_table_link_info_to=${_fileSystem.path.join(outputDir.parent.path, 'App.dt.link')}',
+    ];
+
+    final genSnapshotArgs = <String>[
+      // Shorebird uses --deterministic to improve snapshot stability and increase linking.
+      '--deterministic',
+      // Only save LinkInfo if we're using the linker.
+      if (usesLinker) ...dumpLinkInfoArgs,
+    ];
 
     final bool targetingApplePlatform = platform.os == .ios || platform.os == .macos;
     _logger.printTrace('targetingApplePlatform = $targetingApplePlatform');
@@ -142,6 +244,8 @@ class AOTSnapshotter {
     final targetingAndroidPlatform = platform.os == .android;
     _logger.printTrace('targetingAndroidPlatform = $targetingAndroidPlatform');
 
+    final bool shouldSplitDebugInfo = splitDebugInfo?.isNotEmpty ?? false;
+
     // We strip snapshot by default, but allow to suppress this behavior
     // by supplying --no-strip in extraGenSnapshotOptions.
     var shouldStrip = true;
@@ -152,41 +256,25 @@ class AOTSnapshotter {
           shouldStrip = false;
           continue;
         }
+        // Stripping in gen_snapshot drops the DWARF before it reaches the
+        // assembly, leaving dsymutil nothing to build a dSYM from. The shipped
+        // binary is still stripped, after the dSYM is extracted.
+        if (option == '--strip' && targetingApplePlatform && shouldSplitDebugInfo) {
+          _logger.printTrace(
+            'Ignoring --strip because --split-debug-info needs the DWARF to '
+            'reach dsymutil. The built binary is still stripped afterwards.',
+          );
+          continue;
+        }
         genSnapshotArgs.add(option);
       }
     }
 
-    String aotSharedLibrary = _fileSystem.path.join(outputDir.path, 'app.so');
-    String? frameworkPath;
+    final String assembly = _fileSystem.path.join(outputDir.path, 'snapshot_assembly.S');
     if (targetingApplePlatform) {
-      // On iOS and macOS, we use Xcode to compile the snapshot into a dynamic
-      // library that the end-developer can link into their app.
-      const frameworkName = 'App.framework';
-      if (!quiet) {
-        final String targetArch = cpuArch!.darwinArchName;
-        _logger.printStatus('Building $frameworkName for $targetArch...');
-      }
-      frameworkPath = _fileSystem.path.join(outputPath, frameworkName);
-      _fileSystem.directory(frameworkPath).createSync(recursive: true);
-
-      const frameworkSnapshotName = 'App';
-      aotSharedLibrary = _fileSystem.path.join(frameworkPath, frameworkSnapshotName);
-      final String relocatableObject = _fileSystem.path.join(outputPath, 'app.o');
-      // When the minimum version is updated, remember to update
-      // template MinimumOSVersion.
-      // https://github.com/flutter/flutter/pull/62902
-      final minOSVersion = platform == TargetPlatform.ios
-          ? FlutterDarwinPlatform.ios.deploymentTarget().toString()
-          : FlutterDarwinPlatform.macos.deploymentTarget().toString();
-      genSnapshotArgs.addAll(<String>[
-        '--snapshot_kind=app-aot-macho-dylib',
-        '--macho=$aotSharedLibrary',
-        '--macho-object=$relocatableObject',
-        '--macho-min-os-version=$minOSVersion',
-        '--macho-rpath=@executable_path/Frameworks,@loader_path/Frameworks',
-        '--macho-install-name=@rpath/$frameworkName/$frameworkSnapshotName',
-      ]);
+      genSnapshotArgs.addAll(<String>['--snapshot_kind=app-aot-assembly', '--assembly=$assembly']);
     } else {
+      final String aotSharedLibrary = _fileSystem.path.join(outputDir.path, 'app.so');
       genSnapshotArgs.addAll(<String>['--snapshot_kind=app-aot-elf', '--elf=$aotSharedLibrary']);
     }
 
@@ -219,7 +307,6 @@ class AOTSnapshotter {
     // multiple debug files.
     final String archName = platform.getName(cpuArch: cpuArch);
     final debugFilename = 'app.$archName.symbols';
-    final bool shouldSplitDebugInfo = splitDebugInfo?.isNotEmpty ?? false;
     if (shouldSplitDebugInfo) {
       _fileSystem.directory(splitDebugInfo).createSync(recursive: true);
     }
@@ -229,7 +316,11 @@ class AOTSnapshotter {
       if (shouldSplitDebugInfo) ...<String>[
         '--dwarf-stack-traces',
         '--resolve-dwarf-paths',
-        '--save-debugging-info=${_fileSystem.path.join(splitDebugInfo!, debugFilename)}',
+        // Alongside an assembly snapshot this writes an ELF with no build ID,
+        // which symbol servers skip (dartbug.com/43274). Apple takes the
+        // companion from dsymutil in _buildFramework instead.
+        if (!targetingApplePlatform)
+          '--save-debugging-info=${_fileSystem.path.join(splitDebugInfo!, debugFilename)}',
       ],
       if (dartObfuscation) '--obfuscate',
     ]);
@@ -237,6 +328,40 @@ class AOTSnapshotter {
     genSnapshotArgs.add(mainPath);
 
     final snapshotType = SnapshotType(platform, buildMode);
+
+    // DD pass requires:
+    //   1. an analyze_snapshot binary whose --sdk_version matches gen_snapshot's
+    //      --version, and
+    //   2. a single non-racing ELF output path per build invocation.
+    //
+    // macOS builds fail both. (1) The shipped `analyze_snapshot` is a single
+    // host-arch binary; when targeting x64 from an arm64 host, gen_snapshot_x64
+    // reports `macos_simx64` while analyze_snapshot reports `macos_arm64` and
+    // the version-equality check rejects it. (2) Flutter spawns
+    // gen_snapshot_arm64 and gen_snapshot_x64 in parallel and both DD passes
+    // race on the same `App_dd_analysis.so` path under
+    // `.dart_tool/flutter_build/<hash>/`.
+    //
+    // Skip DD on macOS until that work is done. Patches built without DD
+    // activation will compute DD on the fly when applied, which is the
+    // pre-1.6.99 behavior — slightly worse link percentage but functional.
+    final ddPassSupported = platform != TargetPlatform.darwin;
+    if (ddMaxBytes > 0 && usesLinker && ddPassSupported) {
+      final int pass1Exit = await _runDdAnalysisPass(
+        snapshotType: snapshotType,
+        cpuArch: cpuArch,
+        outputDir: outputDir,
+        baseGenSnapshotArgs: genSnapshotArgs,
+        mainPath: mainPath,
+        ddMaxBytes: ddMaxBytes,
+      );
+      if (pass1Exit != 0) {
+        return pass1Exit;
+      }
+    } else if (usesLinker && ddPassSupported) {
+      _deleteDdOutputs(outputDir);
+    }
+
     final int genSnapshotExitCode = await _genSnapshot.run(
       snapshotType: snapshotType,
       additionalArgs: genSnapshotArgs,
@@ -247,41 +372,289 @@ class AOTSnapshotter {
       return genSnapshotExitCode;
     }
 
+    // On iOS and macOS, we use Xcode to compile the snapshot into a dynamic library that the
+    // end-developer can link into their app.
     if (targetingApplePlatform) {
-      if (extractAppleDebugSymbols) {
-        final Xcode? xcode = _xcode;
-        if (xcode == null) {
-          throw StateError('Xcode must be provided when targeting Apple platforms.');
-        }
-        final RunResult dsymResult = await xcode.dsymutil(<String>[
-          '-o',
-          '$frameworkPath.dSYM',
-          aotSharedLibrary,
-        ]);
-        if (dsymResult.exitCode != 0) {
-          _logger.printError(
-            'Failed to generate dSYM - dsymutil terminated with exit code ${dsymResult.exitCode}',
-          );
-          return dsymResult.exitCode;
-        }
+      return _buildFramework(
+        appleArch: cpuArch!,
+        isIOS: platform == TargetPlatform.ios,
+        sdkRoot: sdkRoot,
+        assemblyPath: assembly,
+        outputPath: outputDir.path,
+        quiet: quiet,
+        stripAfterBuild: stripAfterBuild,
+        extractAppleDebugSymbols: extractAppleDebugSymbols,
+        splitDebugInfoSymbols: shouldSplitDebugInfo
+            ? _fileSystem.path.join(splitDebugInfo!, debugFilename)
+            : null,
+      );
+    } else {
+      return 0;
+    }
+  }
 
-        if (stripAfterBuild) {
-          // See https://www.unix.com/man-page/osx/1/strip/ for arguments
-          final RunResult stripResult = await xcode.strip(<String>[
-            '-x',
-            aotSharedLibrary,
-            '-o',
-            aotSharedLibrary,
-          ]);
-          if (stripResult.exitCode != 0) {
-            _logger.printError(
-              'Failed to strip debugging symbols from the generated AOT snapshot - strip terminated with exit code ${stripResult.exitCode}',
-            );
-            return stripResult.exitCode;
-          }
+  /// The files a DD pass leaves next to the snapshot's output directory, which
+  /// LinkSupplement copies into the release's supplement.
+  static const _ddOutputFileNames = <String>[
+    'App.dd_identity.link',
+    'App.dd.link',
+    'App.dd_callers.link',
+    'App.dd_slots.link',
+    'App.dd_resolution.tsv',
+  ];
+
+  /// Deletes the files an earlier DD pass left next to [outputDir], so a build
+  /// that skips the pass does not ship that pass's tables.
+  void _deleteDdOutputs(Directory outputDir) {
+    for (final String name in _ddOutputFileNames) {
+      final File file = outputDir.parent.childFile(name);
+      if (file.existsSync()) {
+        file.deleteSync();
+      }
+    }
+  }
+
+  /// Runs the DD analysis pass: gen_snapshot → ELF + DD identity, then
+  /// analyze_snapshot to compute the DD table, caller links, and slot mapping.
+  /// On success, mutates [baseGenSnapshotArgs] to add `--dd_slot_mapping=...`
+  /// before [mainPath] so the subsequent gen_snapshot run picks it up.
+  /// Returns the gen_snapshot pass-1 exit code (0 on success).
+  Future<int> _runDdAnalysisPass({
+    required SnapshotType snapshotType,
+    required CpuArch? cpuArch,
+    required Directory outputDir,
+    required List<String> baseGenSnapshotArgs,
+    required String mainPath,
+    required int ddMaxBytes,
+  }) async {
+    _logger.printTrace('DD 2-pass build: dd_max_bytes=$ddMaxBytes');
+
+    String linkPath(String name) => _fileSystem.path.join(outputDir.parent.path, name);
+    final String elfForAnalysis = linkPath('App_dd_analysis.so');
+    final String ddIdentityPath = linkPath('App.dd_identity.link');
+    final String ddTablePath = linkPath('App.dd.link');
+    final String ddCallerLinksPath = linkPath('App.dd_callers.link');
+    final String ddSlotMappingPath = linkPath('App.dd_slots.link');
+    final String ddResolutionPath = linkPath('App.dd_resolution.tsv');
+
+    // Pass 1: build ELF for analysis + DD identity. Strip the existing snapshot
+    // kind/output args from the base set; mainPath must remain at the end.
+    final elfArgs = <String>[
+      ...baseGenSnapshotArgs.where(
+        (String a) =>
+            a != mainPath &&
+            !a.startsWith('--snapshot_kind=') &&
+            !a.startsWith('--assembly=') &&
+            !a.startsWith('--elf='),
+      ),
+      '--snapshot_kind=app-aot-elf',
+      '--elf=$elfForAnalysis',
+      '--print_dd_function_identity_to=$ddIdentityPath',
+      mainPath,
+    ];
+    final int pass1Exit = await _genSnapshot.run(
+      snapshotType: snapshotType,
+      additionalArgs: elfArgs,
+      cpuArch: cpuArch,
+    );
+    if (pass1Exit != 0) {
+      _logger.printError('DD pass 1 (ELF for analysis) failed with exit code $pass1Exit');
+      return pass1Exit;
+    }
+
+    final String? analyzeSnapshotPath = _genSnapshot.getAnalyzeSnapshotPath(
+      snapshotType,
+      cpuArch,
+    );
+    if (analyzeSnapshotPath == null) {
+      _logger.printError(
+        'DD pass: could not find an analyze_snapshot binary whose --sdk_version '
+        'matches gen_snapshot. The release will ship without DD activation; '
+        'patches against it will fall back to on-the-fly DD computation and '
+        'produce a structurally divergent snapshot (devastating link percentage). '
+        'Aborting the build instead.',
+      );
+      _fileSystem.file(elfForAnalysis).deleteSync();
+      return 1;
+    }
+
+    final int ddTableExit = await _processUtils.stream(<String>[
+      analyzeSnapshotPath,
+      '--compute_dd_table=$ddTablePath',
+      '--dd_caller_links=$ddCallerLinksPath',
+      '--dd_max_bytes=$ddMaxBytes',
+      elfForAnalysis,
+    ]);
+    if (ddTableExit != 0) {
+      _logger.printError(
+        'DD pass: analyze_snapshot --compute_dd_table failed with exit code '
+        '$ddTableExit. App.dd.link will not be produced and the release would '
+        'ship without DD activation.',
+      );
+      _fileSystem.file(elfForAnalysis).deleteSync();
+      return ddTableExit;
+    }
+
+    final int ddSlotMappingExit = await _processUtils.stream(<String>[
+      analyzeSnapshotPath,
+      '--compute_dd_slot_mapping=$ddSlotMappingPath',
+      '--dd_table_data=$ddTablePath',
+      '--dd_caller_links=$ddCallerLinksPath',
+      '--dd_function_identity=$ddIdentityPath',
+      elfForAnalysis,
+    ]);
+    if (ddSlotMappingExit != 0) {
+      _logger.printError(
+        'DD pass: analyze_snapshot --compute_dd_slot_mapping failed with exit '
+        'code $ddSlotMappingExit. The DD slot mapping will not be available and '
+        'gen_snapshot pass 2 would emit a no-DD snapshot.',
+      );
+      _fileSystem.file(elfForAnalysis).deleteSync();
+      return ddSlotMappingExit;
+    }
+
+    if (!_fileSystem.file(ddSlotMappingPath).existsSync()) {
+      _logger.printError(
+        'DD pass: analyze_snapshot --compute_dd_slot_mapping reported success '
+        'but $ddSlotMappingPath was not produced.',
+      );
+      _fileSystem.file(elfForAnalysis).deleteSync();
+      return 1;
+    }
+    final int mainPathIndex = baseGenSnapshotArgs.indexOf(mainPath);
+    baseGenSnapshotArgs.insertAll(mainPathIndex, <String>[
+      '--dd_slot_mapping=$ddSlotMappingPath',
+      // Per-slot resolution outcome dump (TSV: slot, outcome, rewritten,
+      // name). Diagnostic for analyzing which slots got dropped during
+      // the resolver's run; ends up alongside the other supplement files
+      // and gets carried into the patch debug bundle.
+      '--print_dd_resolution_to=$ddResolutionPath',
+    ]);
+    _logger.printTrace('DD 2-pass build: added --dd_slot_mapping and --print_dd_resolution_to');
+
+    _fileSystem.file(elfForAnalysis).deleteSync();
+    return 0;
+  }
+
+  /// Builds an iOS or macOS framework at [outputPath]/App.framework from the assembly
+  /// source at [assemblyPath].
+  Future<int> _buildFramework({
+    required CpuArch appleArch,
+    required bool isIOS,
+    String? sdkRoot,
+    required String assemblyPath,
+    required String outputPath,
+    required bool quiet,
+    required bool stripAfterBuild,
+    required bool extractAppleDebugSymbols,
+    required String? splitDebugInfoSymbols,
+  }) async {
+    final String targetArch = appleArch.darwinArchName;
+    if (!quiet) {
+      _logger.printStatus('Building App.framework for $targetArch...');
+    }
+
+    final commonBuildOptions = <String>[
+      '-arch',
+      targetArch,
+      if (isIOS)
+        // When the minimum version is updated, remember to update
+        // template MinimumOSVersion.
+        // https://github.com/flutter/flutter/pull/62902
+        '-miphoneos-version-min=${FlutterDarwinPlatform.ios.deploymentTarget()}',
+      if (sdkRoot != null) ...<String>['-isysroot', sdkRoot],
+    ];
+
+    final String assemblyO = _fileSystem.path.join(outputPath, 'snapshot_assembly.o');
+
+    final RunResult compileResult = await _requiredXcode.cc(<String>[
+      ...commonBuildOptions,
+      '-c',
+      assemblyPath,
+      '-o',
+      assemblyO,
+    ]);
+    if (compileResult.exitCode != 0) {
+      _logger.printError(
+        'Failed to compile AOT snapshot. Compiler terminated with exit code ${compileResult.exitCode}',
+      );
+      return compileResult.exitCode;
+    }
+
+    final String frameworkDir = _fileSystem.path.join(outputPath, 'App.framework');
+    _fileSystem.directory(frameworkDir).createSync(recursive: true);
+    final String appLib = _fileSystem.path.join(frameworkDir, 'App');
+    final linkArgs = <String>[
+      ...commonBuildOptions,
+      '-dynamiclib',
+      '-Xlinker',
+      '-rpath',
+      '-Xlinker',
+      '@executable_path/Frameworks',
+      '-Xlinker',
+      '-rpath',
+      '-Xlinker',
+      '@loader_path/Frameworks',
+      '-fapplication-extension',
+      '-install_name',
+      '@rpath/App.framework/App',
+      '-o',
+      appLib,
+      assemblyO,
+    ];
+
+    final RunResult linkResult = await _requiredXcode.clang(linkArgs);
+    if (linkResult.exitCode != 0) {
+      _logger.printError(
+        'Failed to link AOT snapshot. Linker terminated with exit code ${linkResult.exitCode}',
+      );
+      return linkResult.exitCode;
+    }
+
+    if (extractAppleDebugSymbols) {
+      final RunResult dsymResult = await _requiredXcode.dsymutil(<String>[
+        '-o',
+        '$frameworkDir.dSYM',
+        appLib,
+      ]);
+      if (dsymResult.exitCode != 0) {
+        _logger.printError(
+          'Failed to generate dSYM - dsymutil terminated with exit code ${dsymResult.exitCode}',
+        );
+        return dsymResult.exitCode;
+      }
+
+      // dsymutil derives the dSYM from the linked binary, so its UUID equals
+      // App.framework's by construction.
+      if (splitDebugInfoSymbols != null) {
+        final File dwarf = _fileSystem.file(
+          _fileSystem.path.join('$frameworkDir.dSYM', 'Contents', 'Resources', 'DWARF', 'App'),
+        );
+        if (!dwarf.existsSync()) {
+          _logger.printError('dsymutil reported success but wrote no DWARF at ${dwarf.path}');
+          return 1;
         }
-      } else {
-        assert(!stripAfterBuild);
+        dwarf.copySync(splitDebugInfoSymbols);
+      }
+
+      if (stripAfterBuild) {
+        // See https://www.unix.com/man-page/osx/1/strip/ for arguments
+        final RunResult stripResult = await _requiredXcode.strip(<String>['-x', appLib, '-o', appLib]);
+        if (stripResult.exitCode != 0) {
+          _logger.printError(
+            'Failed to strip debugging symbols from the generated AOT snapshot - strip terminated with exit code ${stripResult.exitCode}',
+          );
+          return stripResult.exitCode;
+        }
+      }
+    } else {
+      assert(!stripAfterBuild);
+      if (splitDebugInfoSymbols != null) {
+        _logger.printError(
+          'Cannot split debug info for $targetArch: debug symbols are only '
+          'extracted for profile and release builds.',
+        );
+        return 1;
       }
     }
 
@@ -300,7 +673,6 @@ class AOTSnapshotter {
       TargetPlatform.darwin,
       TargetPlatform.linux_x64,
       TargetPlatform.linux_arm64,
-      TargetPlatform.linux_riscv64,
       TargetPlatform.windows_x64,
       TargetPlatform.windows_arm64,
     ].contains(platform);

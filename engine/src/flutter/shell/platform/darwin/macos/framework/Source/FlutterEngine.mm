@@ -12,6 +12,8 @@
 
 #include "flutter/common/constants.h"
 #include "flutter/fml/logging.h"
+#include "flutter/fml/paths.h"
+#include "flutter/shell/common/shorebird/shorebird.h"
 #include "flutter/shell/platform/common/app_lifecycle_state.h"
 #include "flutter/shell/platform/common/engine_switches.h"
 #include "flutter/shell/platform/embedder/embedder.h"
@@ -665,6 +667,55 @@ static void SetThreadPriority(FlutterThreadPriority priority) {
   }
 }
 
+- (BOOL)configureShorebird:(NSString**)patchPath {
+  NSLog(@"[shorebird] setting up non-linker shorebird");
+  NSString* bundlePath =
+      [[NSBundle bundleWithURL:[NSBundle.mainBundle.privateFrameworksURL
+                                   URLByAppendingPathComponent:@"App.framework"]] bundlePath];
+  if (bundlePath == nil) {
+    // Passing a null UTF8String into ShorebirdConfigArgs' std::string crashes.
+    NSLog(@"[shorebird] Failed to find App.framework, not starting updater.");
+    return NO;
+  }
+  bundlePath = [bundlePath stringByAppendingString:@"/App"];
+  NSString* assetsPath = _project.assetsPath;
+  NSURL* shorebirdYamlPath = [NSURL URLWithString:@"shorebird.yaml"
+                                    relativeToURL:[NSURL fileURLWithPath:assetsPath]];
+  NSError* shorebirdYamlError = nil;
+  NSString* shorebirdYamlContents = [NSString stringWithContentsOfURL:shorebirdYamlPath
+                                                             encoding:NSUTF8StringEncoding
+                                                                error:&shorebirdYamlError];
+  if (shorebirdYamlContents == nil) {
+    // Passing a null UTF8String into ShorebirdConfigArgs' std::string crashes.
+    NSLog(@"[shorebird] Failed to read %@, not starting updater: %@", shorebirdYamlPath.path,
+          shorebirdYamlError);
+    return NO;
+  }
+  NSString* appVersion =
+      [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+  NSString* appBuildNumber = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"];
+  std::string cache_path =
+      fml::paths::JoinPaths({getenv("HOME"), "Library", "Application Support", "shorebird"});
+  flutter::ReleaseVersion release_version = {appVersion.UTF8String, appBuildNumber.UTF8String};
+  flutter::ShorebirdConfigArgs shorebird_args(cache_path, cache_path, {bundlePath.UTF8String},
+                                              shorebirdYamlContents.UTF8String, release_version);
+  NSLog(@"[shorebird] calling ConfigureShorebird");
+  std::string patch_path;
+  auto res = flutter::ConfigureShorebird(shorebird_args, patch_path);
+  if (!res) {
+    NSLog(@"[shorebird] ConfigureShorebird failed");
+    return NO;
+  }
+
+  NSLog(@"[shorebird] ConfigureShorebird success!");
+  if (patch_path.empty()) {
+    return NO;
+  }
+  *patchPath = [NSString stringWithUTF8String:patch_path.c_str()];
+  NSLog(@"[shorebird] patchPath: %@", *patchPath);
+  return YES;
+}
+
 - (BOOL)runWithEntrypoint:(NSString*)entrypoint {
   if (self.running) {
     return NO;
@@ -787,7 +838,26 @@ static void SetThreadPriority(FlutterThreadPriority priority) {
   };
   flutterArguments.custom_task_runners = &custom_task_runners;
 
-  [self loadAOTData:_project.assetsPath];
+  NSString* patchPath = nil;
+  if (![self configureShorebird:&patchPath]) {
+    // No patch exists, or we failed to configure shorebird.
+    patchPath = nil;
+  }
+  // Without a patch, upstream's -(void)loadAOTData: path. This is the location
+  // where the test fixture places the snapshot file. For applications built by
+  // Flutter tool there is no file here, and the snapshot is resolved from the
+  // linked App.framework instead.
+  NSString* baseElfPath =
+      [NSString pathWithComponents:@[ _project.assetsPath, @"app_elf_snapshot.so" ]];
+  // A patch that fails to load is reported, and the release's own code boots.
+  if (_embedderAPI.RunsAOTCompiledDartCode()) {
+    flutter::LoadPatchOrBase(patchPath ? patchPath.UTF8String : "", baseElfPath.UTF8String,
+                             [self](const std::string& path) {
+                               [self loadAOTData:@(path.c_str())];
+                               return self->_aotData != nullptr;
+                             });
+  }
+
   if (_aotData) {
     flutterArguments.aot_data = _aotData;
   }
@@ -811,6 +881,7 @@ static void SetThreadPriority(FlutterThreadPriority priority) {
       };
 
   FlutterRendererConfig rendererConfig = [_renderer createRendererConfig];
+
   FlutterEngineResult result = _embedderAPI.Initialize(
       FLUTTER_ENGINE_VERSION, &rendererConfig, &flutterArguments, (__bridge void*)(self), &_engine);
   if (result != kSuccess) {
@@ -840,7 +911,7 @@ static void SetThreadPriority(FlutterThreadPriority priority) {
   return YES;
 }
 
-- (void)loadAOTData:(NSString*)assetsDir {
+- (void)loadAOTData:(NSString*)elfPath {
   if (!_embedderAPI.RunsAOTCompiledDartCode()) {
     return;
   }
@@ -848,11 +919,8 @@ static void SetThreadPriority(FlutterThreadPriority priority) {
   BOOL isDirOut = false;  // required for NSFileManager fileExistsAtPath.
   NSFileManager* fileManager = [NSFileManager defaultManager];
 
-  // This is the location where the test fixture places the snapshot file.
-  // For applications built by Flutter tool, this is in "App.framework".
-  NSString* elfPath = [NSString pathWithComponents:@[ assetsDir, @"app_elf_snapshot.so" ]];
-
   if (![fileManager fileExistsAtPath:elfPath isDirectory:&isDirOut]) {
+    FML_LOG(INFO) << "in loadAOTData, elfPath does not exist: " << elfPath.UTF8String;
     return;
   }
 

@@ -119,19 +119,15 @@ group("flutter") {
 
         # path_ops
         "//flutter/tools/path_ops",
+
+        # Built alongside gen_snapshot arm64 targets.
+        "$dart_src/runtime/bin:analyze_snapshot",
       ]
 
       if (host_os == "linux" || host_os == "mac") {
         public_deps += [
           "//flutter/tools/licenses_cpp",
           "//flutter/tools/licenses_cpp:licenses_cpp_testrunner",
-        ]
-      }
-
-      if (host_os == "linux") {
-        public_deps += [
-          # Built alongside gen_snapshot for 64 bit targets
-          "$dart_src/runtime/bin:analyze_snapshot",
         ]
       }
 
@@ -214,6 +210,7 @@ group("unittests") {
       "//flutter/runtime:no_dart_plugin_registrant_unittests",
       "//flutter/runtime:runtime_unittests",
       "//flutter/shell/common:shell_unittests",
+      "//flutter/shell/common/shorebird:shorebird_unittests",
       "//flutter/shell/geometry:geometry_unittests",
       "//flutter/shell/gpu:gpu_surface_unittests",
       "//flutter/shell/platform/embedder:embedder_a11y_unittests",

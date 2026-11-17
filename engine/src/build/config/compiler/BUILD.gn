@@ -453,7 +453,10 @@ config("compiler") {
     # Example PR: https://github.com/dart-lang/native/pull/1615
     ldflags += [
       "-Wl,--no-undefined",
-      "-Wl,--exclude-libs,ALL",
+
+      # TODO: Terrible hack, but otherwise libupdater.a symbols can't
+      # be exported from libflutter.so, even when added to android_exports.lst.
+      # "-Wl,--exclude-libs,ALL",
 
       # Enable identical code folding to reduce size.
       "-Wl,--icf=all",
@@ -493,14 +496,21 @@ config("compiler") {
 # C++ modules (available and enabled by default in C++20 and above) are
 # prohibited by the style guide.
 config("cxx_disable_modules") {
-  disable_modules_flags = [
-    "-fno-modules",
+  disable_modules_flags = [ "-fno-modules" ]
 
-    # Some Clang versions do not disable ObjC modules (as tested by
-    # __has_feature(objc_modules)) when just -fno-modules is present.
-    "-Xclang",
-    "-fno-cxx-modules",
-  ]
+  # -fno-modules leaves C++20 named modules on; -fno-cxx-modules turns them
+  # off. clang's driver passes it on to cc1 as -Xclang would, and spelled
+  # that way sccache can cache the compile. clang-cl ignores it, and
+  # emscripten's clang leaves it unused (an error under -Werror), so Windows
+  # and wasm keep -Xclang.
+  if (is_win || is_wasm) {
+    disable_modules_flags += [
+      "-Xclang",
+      "-fno-cxx-modules",
+    ]
+  } else {
+    disable_modules_flags += [ "-fno-cxx-modules" ]
+  }
   cflags_c = disable_modules_flags
   cflags_cc = disable_modules_flags
   cflags_objc = disable_modules_flags
@@ -659,6 +669,8 @@ config("runtime_library") {
     ldflags += [ "-Wl,--warn-shared-textrel" ]
 
     libs += [
+      # Rust requires libunwind.
+      "unwind",
       "c",
       "dl",
       "m",
@@ -673,6 +685,9 @@ config("runtime_library") {
     } else if (current_cpu == "x86") {
       current_android_cpu = "i686"
     }
+    # libunwind.a is located in the respective android cpu subdirectories.
+    # The clang version needs to match the version in the lib_dirs line above.
+    lib_dirs += [ "${android_toolchain_root}/lib/clang/19/lib/linux/${current_android_cpu}/" ]
     libs += [ "clang_rt.builtins-${current_android_cpu}-android" ]
   }
 

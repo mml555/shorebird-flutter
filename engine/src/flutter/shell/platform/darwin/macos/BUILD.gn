@@ -6,6 +6,7 @@ assert(is_mac)
 
 import("//build/config/darwin/darwin_sdk.gni")
 import("//flutter/build/zip_bundle.gni")
+import("//flutter/shell/common/shorebird/build_rust_updater.gni")
 import("//flutter/shell/gpu/gpu.gni")
 import("//flutter/shell/platform/darwin/common/framework_common.gni")
 import("//flutter/shell/platform/glfw/config.gni")
@@ -145,12 +146,14 @@ source_set("flutter_framework_source") {
     ":macos_gpu_configuration",
     "//flutter/flow",
     "//flutter/fml",
+    "//flutter/shell/common/shorebird",
     "//flutter/shell/platform/common:common_cpp_accessibility",
     "//flutter/shell/platform/common:common_cpp_core",
     "//flutter/shell/platform/common:common_cpp_enums",
     "//flutter/shell/platform/common:common_cpp_input",
     "//flutter/shell/platform/common:common_cpp_isolate_scope",
     "//flutter/shell/platform/common:common_cpp_switches",
+    "//flutter/shell/platform/darwin/common",
     "//flutter/shell/platform/darwin/common:availability_version_check",
     "//flutter/shell/platform/darwin/common:framework_common",
     "//flutter/shell/platform/darwin/graphics",
@@ -186,6 +189,11 @@ shared_library("flutter_framework_dylib") {
   ]
 
   deps = [ ":flutter_framework_source" ]
+
+  # Shorebird: hide the Rust updater's internals from the framework's exports.
+  if (shorebird_updater_supported) {
+    configs += [ "//flutter/shell/common/shorebird:updater_unexported_symbols" ]
+  }
 }
 
 test_fixtures("flutter_desktop_darwin_fixtures") {

@@ -32,7 +32,11 @@ internal data class FlutterCompileOptions(
     val treeShakeIcons: Boolean,
     val dartDefines: String?,
     val performanceMeasurementFile: String?,
+    val shorebirdTraceFile: String?,
     val codeSizeDirectory: String?,
+    // Shorebird-specific.
+    val shorebirdPublicKey: String?,
+    val shorebirdDdMaxBytes: String?,
     val deferredComponents: Boolean,
     val validateDeferredComponents: Boolean
 ) {
@@ -48,7 +52,10 @@ internal data class FlutterCompileOptions(
         const val TREE_SHAKE_ICONS_PROPERTY = "tree-shake-icons"
         const val DART_DEFINES_PROPERTY = "dart-defines"
         const val PERFORMANCE_MEASUREMENT_FILE_PROPERTY = "performance-measurement-file"
+        const val SHOREBIRD_TRACE_FILE_PROPERTY = "shorebird-trace-file"
         const val CODE_SIZE_DIRECTORY_PROPERTY = "code-size-directory"
+        const val SHOREBIRD_PUBLIC_KEY_PROPERTY = "shorebird-public-key"
+        const val SHOREBIRD_DD_MAX_BYTES_PROPERTY = "shorebird-dd-max-bytes"
         const val DEFERRED_COMPONENTS_PROPERTY = "deferred-components"
         const val VALIDATE_DEFERRED_COMPONENTS_PROPERTY = "validate-deferred-components"
 
@@ -89,7 +96,10 @@ internal data class FlutterCompileOptions(
                 dartDefines = project.findProperty(DART_DEFINES_PROPERTY)?.toString(),
                 performanceMeasurementFile =
                     project.findProperty(PERFORMANCE_MEASUREMENT_FILE_PROPERTY)?.toString(),
+                shorebirdTraceFile = project.findProperty(SHOREBIRD_TRACE_FILE_PROPERTY)?.toString(),
                 codeSizeDirectory = project.findProperty(CODE_SIZE_DIRECTORY_PROPERTY)?.toString(),
+                shorebirdPublicKey = project.findProperty(SHOREBIRD_PUBLIC_KEY_PROPERTY)?.toString(),
+                shorebirdDdMaxBytes = project.findProperty(SHOREBIRD_DD_MAX_BYTES_PROPERTY)?.toString(),
                 deferredComponents =
                     project.findProperty(DEFERRED_COMPONENTS_PROPERTY)?.toString()?.toBoolean() ?: false,
                 validateDeferredComponents =

@@ -38,6 +38,7 @@ class BuildApkCommand extends BuildSubCommand {
       _configOnly,
       _targetPlatform,
     ]);
+    usesShorebirdTraceOption(hide: !verboseHelp);
   }
 
   static const _splitPerAbi = FlagOptionDescriptor(

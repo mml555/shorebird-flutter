@@ -741,9 +741,25 @@ class Context {
       );
     }
 
+    // Shorebird-specific build-trace plumbing: mac.dart sets
+    // SHOREBIRD_TRACE_FILE in the Xcode build environment; here (running
+    // as an Xcode build phase script) we forward it to flutter assemble.
+    final String? shorebirdTraceFile = environment['SHOREBIRD_TRACE_FILE'];
+    if (shorebirdTraceFile != null && shorebirdTraceFile.isNotEmpty) {
+      flutterArgs.add('--shorebird-trace-file=$shorebirdTraceFile');
+    }
+
     if (environment['CODE_SIZE_DIRECTORY'] != null &&
         environment['CODE_SIZE_DIRECTORY']!.isNotEmpty) {
       flutterArgs.add('-dCodeSizeDirectory=${environment['CODE_SIZE_DIRECTORY']}');
+    }
+
+    // Shorebird-specific: settings from BuildInfo.toEnvironmentConfig.
+    if (environment['SHOREBIRD_ENCODED_PUBLIC_KEY']?.isNotEmpty ?? false) {
+      flutterArgs.add('-dShorebirdPublicKey=${environment['SHOREBIRD_ENCODED_PUBLIC_KEY']}');
+    }
+    if (environment['SHOREBIRD_BUILD_DD_MAX_BYTES']?.isNotEmpty ?? false) {
+      flutterArgs.add('-dShorebirdDdMaxBytes=${environment['SHOREBIRD_BUILD_DD_MAX_BYTES']}');
     }
 
     return flutterArgs;

@@ -111,6 +111,21 @@ open class BaseFlutterTask : DefaultTask() {
     @Input
     var performanceMeasurementFile: String? = null
 
+    // Shorebird-specific: path for the Shorebird build trace. Prefixed so
+    // it stands out as fork-only surface in this otherwise upstream file.
+    @Optional
+    @Input
+    var shorebirdTraceFile: String? = null
+
+    // Shorebird-specific: passed to flutter assemble as defines.
+    @Optional
+    @Input
+    var shorebirdPublicKey: String? = null
+
+    @Optional
+    @Input
+    var shorebirdDdMaxBytes: String? = null
+
     @Optional
     @Input
     var deferredComponents: Boolean? = null

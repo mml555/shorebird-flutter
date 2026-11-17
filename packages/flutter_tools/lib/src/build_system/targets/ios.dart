@@ -21,6 +21,7 @@ import '../../ios/mac.dart';
 import '../../isolated/native_assets/dart_hook_result.dart';
 import '../../macos/xcode.dart';
 import '../../project.dart';
+import '../../shorebird/shorebird_defines.dart';
 import '../build_system.dart';
 import '../depfile.dart';
 import '../exceptions.dart';
@@ -118,6 +119,8 @@ abstract class AotAssemblyBase extends Target {
           splitDebugInfo: splitDebugInfo,
           dartObfuscation: dartObfuscation,
           extraGenSnapshotOptions: archExtraGenSnapshotOptions,
+          // Shorebird-specific.
+          ddMaxBytes: int.tryParse(environment.defines[kShorebirdDdMaxBytes] ?? '') ?? 0,
         ),
       );
     }
@@ -142,6 +145,12 @@ abstract class AotAssemblyBase extends Target {
       inputDir: buildOutputPath,
       // Don't fail if the dSYM wasn't created (i.e. during a debug build).
       skipMissingInputs: true,
+    );
+
+    await LinkSupplement.create(
+      environment,
+      inputBuildDir: buildOutputPath,
+      outputBuildDir: getIosBuildDirectory(),
     );
   }
 }

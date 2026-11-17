@@ -48,6 +48,8 @@
 #include "third_party/skia/include/core/SkGraphics.h"
 #include "third_party/tonic/common/log.h"
 
+#include "flutter/shell/common/shorebird/updater.h"
+
 namespace flutter {
 
 constexpr char kSkiaChannel[] = "flutter/skia";
@@ -515,6 +517,36 @@ Shell::Shell(DartVMRef vm,
       is_gpu_disabled_sync_switch_(new fml::SyncSwitch(is_gpu_disabled)),
       weak_factory_gpu_(nullptr),
       weak_factory_(this) {
+  // Report launch outcome to the Shorebird updater for crash recovery.
+  // If the VM failed to start, we report failure so the updater can roll
+  // back the patch. These calls are guarded inside Updater to execute at
+  // most once per process — only the first Shell's outcome is reported.
+  // In add-to-app, subsequent engines are silently ignored since they
+  // boot from the same snapshot that was already reported on.
+  // On unsupported platforms, NoOpUpdater handles these calls gracefully.
+#if SHOREBIRD_ROUTE_B
+  // Report launch FAILURE only. A null VM means Dart can never run, so the
+  // patch must be backed out and there is nothing later to wait for.
+  //
+  // SUCCESS IS NOT REPORTED HERE in a Route B engine. This is the Shell
+  // CONSTRUCTOR: the root isolate does not exist yet, so "the VM object was
+  // created" says nothing about whether the patch works, and banking success
+  // here means a Dart-phase failure caused by a patch could never back it out.
+  // It is reported from DART, whichever comes first: `main` completing or the
+  // first framework frame (lib/ui/hooks.dart). `Engine::Run` returns before any
+  // user Dart executes, so no point in this file can observe a Dart-phase
+  // outcome. Success and failure share ONE latch in Updater, so a success
+  // banked here would also make the Dart report permanently unreachable.
+  if (!vm_) {
+    shorebird::Updater::Instance().ReportLaunchFailure();
+  }
+#else
+  if (!vm_) {
+    shorebird::Updater::Instance().ReportLaunchFailure();
+  } else {
+    shorebird::Updater::Instance().ReportLaunchSuccess();
+  }
+#endif
   FML_CHECK(!settings.enable_software_rendering || !settings.enable_impeller)
       << "Software rendering is incompatible with Impeller.";
   if (!settings.enable_impeller && settings.warn_on_impeller_opt_out) {
@@ -806,6 +838,13 @@ void Shell::RunEngine(
             auto run_result = weak_engine->Run(std::move(run_configuration));
             if (run_result == flutter::Engine::RunStatus::Failure) {
               FML_LOG(ERROR) << "Could not launch engine with configuration.";
+#if SHOREBIRD_ROUTE_B
+              // A Run that returns Failure means the root isolate never
+              // started, which the Dart report cannot observe, and the two are
+              // mutually exclusive so they cannot race. Only this reporter sees
+              // a failure BEFORE Dart exists. Success is reported from Dart.
+              shorebird::Updater::Instance().ReportLaunchFailure();
+#endif
             }
 
             result(run_result);

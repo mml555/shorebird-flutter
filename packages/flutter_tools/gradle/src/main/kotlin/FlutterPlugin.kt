@@ -624,7 +624,10 @@ class FlutterPlugin : Plugin<Project> {
             dartObfuscation = compileOptions.dartObfuscation
             dartDefines = compileOptions.dartDefines
             performanceMeasurementFile = compileOptions.performanceMeasurementFile
+            shorebirdTraceFile = compileOptions.shorebirdTraceFile
             codeSizeDirectory = compileOptions.codeSizeDirectory
+            shorebirdPublicKey = compileOptions.shorebirdPublicKey
+            shorebirdDdMaxBytes = compileOptions.shorebirdDdMaxBytes
             deferredComponents = compileOptions.deferredComponents
             validateDeferredComponents = compileOptions.validateDeferredComponents
             flavor = flavorName

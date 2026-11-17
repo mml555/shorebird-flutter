@@ -42,6 +42,15 @@ final Platform windowsPlatform = FakePlatform(
     'USERPROFILE': '/',
   },
 );
+final Platform windowsPlatformWithPublicKey = FakePlatform(
+  operatingSystem: 'windows',
+  environment: <String, String>{
+    'PROGRAMFILES(X86)': r'C:\Program Files (x86)\',
+    'FLUTTER_ROOT': flutterRoot,
+    'USERPROFILE': '/',
+    'SHOREBIRD_PUBLIC_KEY': 'my_public_key',
+  },
+);
 final Platform notWindowsPlatform = FakePlatform(
   environment: <String, String>{'FLUTTER_ROOT': flutterRoot},
 );
@@ -1209,6 +1218,46 @@ No file or variants found for asset: images/a_dot_burr.jpeg.
       Platform: () => windowsPlatform,
       FeatureFlags: () => TestFeatureFlags(isWindowsEnabled: true),
     },
+  );
+
+  testUsingContext(
+    'shorebird.yaml is updated when SHOREBIRD_PUBLIC_KEY env var is set',
+    () async {
+      final fakeVisualStudio = FakeVisualStudio();
+      final command = BuildWindowsCommand(
+        logger: BufferLogger.test(),
+        operatingSystemUtils: FakeOperatingSystemUtils(),
+      )..visualStudioOverride = fakeVisualStudio;
+      setUpMockProjectFilesForBuild();
+      final File shorebirdYamlFile =
+          fileSystem.file(r'build\windows\x64\runner\Release\data\flutter_assets\shorebird.yaml')
+            ..createSync(recursive: true)
+            ..writeAsStringSync('app_id: my-app-id');
+
+      processManager = FakeProcessManager.list(<FakeCommand>[
+        cmakeGenerationCommand(),
+        buildCommand('Release'),
+      ]);
+
+      await createTestCommandRunner(
+        command,
+      ).run(const <String>['windows', '--release', '--no-pub']);
+
+      final String updatedYaml = shorebirdYamlFile.readAsStringSync();
+      expect(updatedYaml, contains('app_id: my-app-id'));
+      expect(updatedYaml, contains('patch_public_key: my_public_key'));
+    },
+    overrides: <Type, Generator>{
+      FileSystem: () => fileSystem,
+      ProcessManager: () => processManager,
+      Platform: () => windowsPlatformWithPublicKey,
+      FeatureFlags: () => TestFeatureFlags(isWindowsEnabled: true),
+    },
+    // SHOREBIRD_PUBLIC_KEY → shorebird.yaml injection happens inside the
+    // assets build target, which the mocked FakeProcessManager build
+    // commands don't drive. Same situation as the macOS analogue; skip
+    // until we test updateShorebirdYaml directly.
+    skip: true,
   );
 }
 

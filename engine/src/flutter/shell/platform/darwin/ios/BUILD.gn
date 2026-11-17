@@ -9,6 +9,7 @@ import("//build/toolchain/clang.gni")
 import("//build/toolchain/toolchain.gni")
 import("//flutter/common/config.gni")
 import("//flutter/shell/config.gni")
+import("//flutter/shell/common/shorebird/build_rust_updater.gni")
 import("//flutter/shell/gpu/gpu.gni")
 import("//flutter/shell/platform/darwin/common/framework_common.gni")
 import("//flutter/testing/testing.gni")
@@ -204,12 +205,15 @@ source_set("flutter_framework_source") {
 
   deps = [
     ":ios_gpu_configuration",
+    "$dart_src/runtime/bin:elf_loader",
     "//flutter/common",
     "//flutter/common/graphics",
     "//flutter/fml",
     "//flutter/lib/ui",
     "//flutter/runtime",
     "//flutter/shell/common",
+    "//flutter/shell/common/shorebird",
+    "//flutter/shell/common/shorebird:updater",
     "//flutter/shell/platform/common:common_cpp_input",
     "//flutter/shell/platform/darwin/common",
     "//flutter/shell/platform/darwin/common:framework_common",
@@ -395,6 +399,11 @@ shared_library("create_flutter_framework_dylib") {
 
   public_configs = [ "//flutter:config" ]
   configs += [ "//build/config/ios:ios_application_extension" ]
+
+  # Shorebird: hide the Rust updater's internals from the framework's exports.
+  if (shorebird_updater_supported) {
+    configs += [ "//flutter/shell/common/shorebird:updater_unexported_symbols" ]
+  }
 }
 
 copy("copy_dylib") {

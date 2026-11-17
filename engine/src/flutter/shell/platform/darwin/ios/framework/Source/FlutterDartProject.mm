@@ -13,6 +13,9 @@
 
 #include "flutter/common/constants.h"
 #include "flutter/fml/build_config.h"
+#include "flutter/fml/paths.h"
+#include "flutter/shell/common/shorebird/shorebird.h"
+#include "flutter/shell/common/shorebird/updater.h"
 #include "flutter/shell/common/switches.h"
 #import "flutter/shell/platform/darwin/common/InternalFlutterSwiftCommon/InternalFlutterSwiftCommon.h"
 #include "flutter/shell/platform/darwin/common/command_line.h"
@@ -47,6 +50,45 @@ NSNumber* _Nullable FLTEnableWideGamutFromBundle(NSBundle* _Nullable bundle,
   }
   return nsEnableWideGamut;
 }
+
+// Whether this iOS engine can run a patch at all: with Shorebird's interpreter
+// (shorebird_use_interpreter) or as a Route B engine (shorebird_route_b). Only
+// such an engine starts the updater; otherwise it would download patches only
+// for them to be discarded. SHOREBIRD_USE_INTERPRETER stays 0 for Route B.
+#if SHOREBIRD_USE_INTERPRETER || SHOREBIRD_ROUTE_B
+#define SHOREBIRD_IOS_CAN_RUN_PATCHES 1
+#else
+#define SHOREBIRD_IOS_CAN_RUN_PATCHES 0
+#endif
+
+#if !FLUTTER_JIT_RUNTIME && SHOREBIRD_IOS_CAN_RUN_PATCHES
+// A launch before the device's first unlock (a push, a background fetch)
+// can't read the updater's files, which iOS protects until then, so it runs
+// the base release and can't report why. Tell the updater once the files
+// unlock so it can report it from this process. Entering the foreground also
+// counts: it needs an unlocked device, and a process suspended at the unlock
+// may not see the notification. Observed once per process; the updater does
+// disk I/O, so it runs off the main thread.
+static void ObserveShorebirdProtectedData() {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    void (^notify)(NSNotification*) = ^(NSNotification* note) {
+      dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        flutter::shorebird::Updater::Instance().ProtectedDataAvailable();
+      });
+    };
+    NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
+    [center addObserverForName:UIApplicationProtectedDataDidBecomeAvailable
+                        object:nil
+                         queue:nil
+                    usingBlock:notify];
+    [center addObserverForName:UIApplicationWillEnterForegroundNotification
+                        object:nil
+                         queue:nil
+                    usingBlock:notify];
+  });
+}
+#endif  // !FLUTTER_JIT_RUNTIME && SHOREBIRD_IOS_CAN_RUN_PATCHES
 
 flutter::Settings FLTDefaultSettingsForBundle(NSBundle* bundle, NSProcessInfo* processInfoOrNil) {
   auto command_line = flutter::CommandLineFromNSProcessInfo(processInfoOrNil);
@@ -105,10 +147,12 @@ flutter::Settings FLTDefaultSettingsForBundle(NSBundle* bundle, NSProcessInfo* p
   }
 
   if (flutter::DartVM::IsRunningPrecompiledCode()) {
+    NSLog(@"SANITY CHECK: Running precompiled code.");
     if (hasExplicitBundle) {
       NSString* executablePath = bundle.executablePath;
       if ([[NSFileManager defaultManager] fileExistsAtPath:executablePath]) {
         settings.application_library_paths.push_back(executablePath.UTF8String);
+        NSLog(@"Using precompiled library from %@", executablePath);
       }
     }
 
@@ -120,6 +164,7 @@ flutter::Settings FLTDefaultSettingsForBundle(NSBundle* bundle, NSProcessInfo* p
         NSString* executablePath = [NSBundle bundleWithPath:libraryPath].executablePath;
         if (executablePath.length > 0) {
           settings.application_library_paths.push_back(executablePath.UTF8String);
+          NSLog(@"Using library from %@", libraryPath);
         }
       }
     }
@@ -134,6 +179,7 @@ flutter::Settings FLTDefaultSettingsForBundle(NSBundle* bundle, NSProcessInfo* p
             [NSBundle bundleWithPath:applicationFrameworkPath].executablePath;
         if (executablePath.length > 0) {
           settings.application_library_paths.push_back(executablePath.UTF8String);
+          NSLog(@"Using App.framework from %@", applicationFrameworkPath);
         }
       }
     }
@@ -164,6 +210,62 @@ flutter::Settings FLTDefaultSettingsForBundle(NSBundle* bundle, NSProcessInfo* p
       }
     }
   }
+
+  NSString* assetsPath = [NSString stringWithUTF8String:settings.assets_path.c_str()];
+  NSLog(@"ASSET PATH %@", assetsPath);
+
+  // Debug (JIT) builds never start the updater: patches are AOT code, and a
+  // debug session must not check for, download or report on a release's
+  // patches. The tool bundles shorebird.yaml in every build mode. (Android
+  // skips it outside FLUTTER_RELEASE; iOS keeps it in profile.)
+#if FLUTTER_JIT_RUNTIME
+  NSLog(@"Debug build, not starting the Shorebird updater.");
+#elif !SHOREBIRD_IOS_CAN_RUN_PATCHES
+  // SELFHOST: an iOS engine built with neither the interpreter nor Route B (see
+  // shorebird_use_interpreter and shorebird_route_b in common/config.gni)
+  // cannot run a patch, so don't start the updater: it would download patches
+  // only for them to be discarded. The app runs as it does with no
+  // shorebird.yaml.
+  //
+  // This branch, and so this string, is compiled out of a shorebird_route_b
+  // engine: a Route B engine does take patches, and the CLI must not read it
+  // as declining.
+  //
+  // Load-bearing text: the Shorebird CLI (isRouteBEngine in
+  // packages/shorebird_cli/lib/src/route_b.dart) searches the iOS release
+  // binary for "engine cannot run iOS patches" to learn that this engine can't
+  // take patches. Keep that phrase if you reword this line.
+  NSLog(@"This engine cannot run iOS patches, not starting the Shorebird updater.");
+#else
+  // FIXME: This may not be the correct path (e.g., should it include the organization id?)
+  // See
+  // https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/FileSystemProgrammingGuide/FileSystemOverview/FileSystemOverview.html#//apple_ref/doc/uid/TP40010672-CH2-SW13
+  // /private/var/mobile/Containers/Data/Application/264477BF-6E38-47C9-AAD9-532BB842F197/Library/Application
+  // Support/shorebird/shorebird_updater
+  std::string cache_path =
+      fml::paths::JoinPaths({getenv("HOME"), "Library/Application Support/shorebird"});
+  NSURL* shorebirdYamlPath = [NSURL URLWithString:@"shorebird.yaml"
+                                    relativeToURL:[NSURL fileURLWithPath:assetsPath]];
+  NSString* appVersion = [mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+  NSString* appBuildNumber = [mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"];
+  NSString* shorebirdYamlContents = [NSString stringWithContentsOfURL:shorebirdYamlPath
+                                                             encoding:NSUTF8StringEncoding
+                                                                error:nil];
+  if (shorebirdYamlContents != nil) {
+    // Note: we intentionally pass cache_path twice. We provide two different directories
+    //   to ConfigureShorebird because Android differentiates between data that persists
+    //   between releases and data that does not. iOS does not make this distinction.
+    flutter::ShorebirdConfigArgs shorebird_args(
+        cache_path, cache_path, settings.application_library_paths,
+        shorebirdYamlContents.UTF8String, {appVersion.UTF8String, appBuildNumber.UTF8String});
+    std::string patch_path;
+    flutter::ConfigureShorebird(shorebird_args, patch_path);
+    flutter::ApplyPatchToSettings(patch_path, settings);
+    ObserveShorebirdProtectedData();
+  } else {
+    NSLog(@"Failed to find shorebird.yaml, not starting updater.");
+  }
+#endif  // FLUTTER_JIT_RUNTIME
 
   // Domain network configuration
   // Disabled in https://github.com/flutter/flutter/issues/72723.

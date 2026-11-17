@@ -148,6 +148,10 @@ abstract final class FlutterOptions {
   static const kDartDefineFromFileOption = 'dart-define-from-file';
   static const kWebDefinesOption = 'web-define';
   static const kPerformanceMeasurementFile = 'performance-measurement-file';
+  // Shorebird-specific build-trace option. Prefixed so the flag name and
+  // generated env vars / Gradle properties don't squat on identifiers
+  // upstream Flutter might want later.
+  static const kShorebirdTrace = 'shorebird-trace';
   static const kDeviceUser = 'device-user';
   static const kDeviceTimeout = 'device-timeout';
   static const kDeviceConnection = 'device-connection';
@@ -661,7 +665,9 @@ abstract class FlutterCommand extends Command<void> {
   void usesWebResourcesCdnFlag() {
     argParser.addFlag(
       FlutterOptions.kWebResourcesCdnFlag,
-      defaultsTo: true,
+      // Shorebird: off by default (upstream: defaultsTo: true). Flutter's CDN
+      // (gstatic.com/flutter-canvaskit) has no CanvasKit for Shorebird's
+      // engine revisions, so load the copy built into build/web/canvaskit/.
       help: 'Use Web static resources hosted on a CDN.',
     );
   }
@@ -833,6 +839,19 @@ abstract class FlutterCommand extends Command<void> {
 
   void addBuildPerformanceFile({bool hide = false}) {
     BuildInfoOptions.performanceMeasurementFile.addTo(argParser, hideOverride: hide);
+  }
+
+  void usesShorebirdTraceOption({bool hide = false}) {
+    argParser.addOption(
+      FlutterOptions.kShorebirdTrace,
+      help:
+          'Output a Chrome Trace Event Format JSON file for build '
+          'profiling. The resulting file can be viewed at '
+          'https://ui.perfetto.dev. Shorebird-specific; named to avoid '
+          'colliding with any future upstream trace option.',
+      hide: hide,
+      valueHelp: 'path/to/shorebird-trace.json',
+    );
   }
 
   void addAndroidSpecificBuildOptions({bool hide = false}) {
@@ -1093,6 +1112,11 @@ abstract class FlutterCommand extends Command<void> {
       BuildInfoOptions.performanceMeasurementFile,
     );
 
+    final String? shorebirdTraceFilePath =
+        argParser.options.containsKey(FlutterOptions.kShorebirdTrace)
+        ? stringArg(FlutterOptions.kShorebirdTrace)
+        : null;
+
     final Map<String, Object?> defineConfigJsonMap = extractDartDefineConfigJsonMap();
     final List<String> dartDefines = extractDartDefines(defineConfigJsonMap: defineConfigJsonMap);
 
@@ -1123,6 +1147,13 @@ abstract class FlutterCommand extends Command<void> {
     _addFlutterVersionToDartDefines(_flutterVersion, dartDefines);
     _addFeatureFlagsToDartDefines(dartDefines);
 
+    // Shorebird-specific: the shorebird CLI sets these two environment
+    // variables on `flutter build`. They are the only ones read here, and
+    // BuildInfo passes them to `flutter assemble` as defines.
+    final String? shorebirdPublicKey = globals.platform.environment['SHOREBIRD_PUBLIC_KEY'];
+    final int shorebirdDdMaxBytes =
+        int.tryParse(globals.platform.environment['SHOREBIRD_DD_MAX_BYTES'] ?? '') ?? 0;
+
     return BuildInfo(
       buildMode,
       flavor,
@@ -1140,6 +1171,9 @@ abstract class FlutterCommand extends Command<void> {
       dartDefines: dartDefines,
       dartExperiments: experiments,
       performanceMeasurementFile: performanceMeasurementFile,
+      shorebirdTraceFilePath: shorebirdTraceFilePath,
+      shorebirdPublicKey: shorebirdPublicKey == '' ? null : shorebirdPublicKey,
+      shorebirdDdMaxBytes: shorebirdDdMaxBytes > 0 ? shorebirdDdMaxBytes : null,
       packageConfigPath: packagesPath ?? packageConfigFile.path,
       codeSizeDirectory: codeSizeDirectory,
       androidGradleDaemon: androidGradleDaemon,

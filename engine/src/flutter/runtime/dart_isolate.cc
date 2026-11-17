@@ -1110,7 +1110,9 @@ Dart_Isolate DartIsolate::DartIsolateGroupCreateCallback(
               advisory_script_entrypoint,
               parent_group_data.GetChildIsolatePreparer(),
               parent_group_data.GetIsolateCreateCallback(),
-              parent_group_data.GetIsolateShutdownCallback())));
+              parent_group_data.GetIsolateShutdownCallback(),
+              nullptr  // native_assets_manager
+              )));
 
   TaskRunners null_task_runners(advisory_script_uri,
                                 /* platform= */ nullptr,
