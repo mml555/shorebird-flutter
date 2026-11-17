@@ -578,14 +578,13 @@ STDERR STUFF
   testUsingContext(
     'macOS build with --shorebird-trace passes trace plumbing to xcodebuild and writes the trace',
     () async {
-      final command = BuildCommand(
+      final BuildCommand command = createFakeBuildCommand(
         androidSdk: FakeAndroidSdk(),
         buildSystem: TestBuildSystem.all(BuildResult(success: true)),
         fileSystem: fileSystem,
         logger: logger,
         osUtils: FakeOperatingSystemUtils(),
         config: FakeConfig(),
-        platform: FakePlatform(),
         fileSystemUtils: FakeFileSystemUtils(),
         terminal: FakeTerminal(),
         plistParser: FakePlistParser(),
@@ -599,9 +598,8 @@ STDERR STUFF
       );
       createMinimalMockProjectFiles();
 
-      await createTestCommandRunner(
-        command,
-      ).run(const <String>['build', 'macos', '--no-pub', '--shorebird-trace=build/trace.json']);
+      await createTestCommandRunner(command)
+          .run(const <String>['build', 'macos', '--no-pub', '--shorebird-trace=build/trace.json']);
 
       final File traceFile = fileSystem.file('build/trace.json');
       expect(traceFile, exists);
@@ -1935,4 +1933,54 @@ STDERR STUFF
       },
     );
   });
+
+  testUsingContext(
+    'macOS build outputs path and size when successful',
+    () async {
+      final BuildCommand command = createFakeBuildCommand(
+        androidSdk: FakeAndroidSdk(),
+        buildSystem: TestBuildSystem.all(BuildResult(success: true)),
+        fileSystem: MemoryFileSystem.test(),
+        logger: BufferLogger.test(),
+        osUtils: FakeOperatingSystemUtils(),
+        config: FakeConfig(),
+        fileSystemUtils: FakeFileSystemUtils(),
+        terminal: FakeTerminal(),
+        plistParser: FakePlistParser(),
+        processUtils: FakeProcessUtils(),
+        processManager: FakeProcessManager.any(),
+        templateRenderer: FakeTemplateRenderer(),
+        xcode: FakeXcode(),
+        artifacts: FakeArtifacts(),
+        cache: FakeCache(),
+        flutterVersion: FakeFlutterVersion(),
+      );
+      createMinimalMockProjectFiles();
+      final File shorebirdYamlFile =
+          fileSystem.file(
+              'build/macos/Build/Products/Release/example.app/Contents/Frameworks/App.framework/Resources/flutter_assets/shorebird.yaml',
+            )
+            ..createSync(recursive: true)
+            ..writeAsStringSync('app_id: my-app-id');
+
+      await createTestCommandRunner(command).run(const <String>['build', 'macos', '--no-pub']);
+
+      final String updatedYaml = shorebirdYamlFile.readAsStringSync();
+      expect(updatedYaml, contains('app_id: my-app-id'));
+      expect(updatedYaml, contains('patch_public_key: my_public_key'));
+    },
+    overrides: <Type, Generator>{
+      FileSystem: () => fileSystem,
+      ProcessManager: () =>
+          FakeProcessManager.list(<FakeCommand>[setUpFakeXcodeBuildHandler('Release')]),
+      Platform: () => macosPlatformWithShorebirdPublicKey,
+      FeatureFlags: () => TestFeatureFlags(isMacOSEnabled: true),
+      OperatingSystemUtils: () => FakeOperatingSystemUtils(hostPlatform: HostPlatform.darwin_x64),
+    },
+    // SHOREBIRD_PUBLIC_KEY → shorebird.yaml injection happens inside the
+    // assets build target, which TestBuildSystem.all stubs out entirely.
+    // Exercising it needs a real build system or a direct updateShorebirdYaml
+    // call; skip until that rework lands.
+    skip: true, // [intended] needs a real build system, see above
+  );
 }

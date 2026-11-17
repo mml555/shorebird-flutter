@@ -26,13 +26,11 @@ class SnapshotType {
 /// Interface to the gen_snapshot command-line tool.
 class GenSnapshot {
   GenSnapshot({
-    required Artifacts artifacts,
+    required this._artifacts,
     required ProcessManager processManager,
     required Logger logger,
-    required FileSystem fileSystem,
-  }) : _artifacts = artifacts,
-       _fileSystem = fileSystem,
-       _processUtils = ProcessUtils(logger: logger, processManager: processManager);
+    required this._fileSystem,
+  }) : _processUtils = ProcessUtils(logger: logger, processManager: processManager);
 
   final Artifacts _artifacts;
   final ProcessUtils _processUtils;
@@ -158,12 +156,11 @@ class AOTSnapshotter {
   AOTSnapshotter({
     required Logger logger,
     required FileSystem fileSystem,
-    Xcode? xcode,
+    this._xcode,
     required ProcessManager processManager,
     required Artifacts artifacts,
   }) : _logger = logger,
        _fileSystem = fileSystem,
-       _xcode = xcode,
        _processUtils = ProcessUtils(logger: logger, processManager: processManager),
        _genSnapshot = GenSnapshot(
          artifacts: artifacts,
@@ -183,6 +180,7 @@ class AOTSnapshotter {
     }
     return xcode;
   }
+
   final ProcessUtils _processUtils;
   final GenSnapshot _genSnapshot;
 
@@ -462,10 +460,7 @@ class AOTSnapshotter {
       return pass1Exit;
     }
 
-    final String? analyzeSnapshotPath = _genSnapshot.getAnalyzeSnapshotPath(
-      snapshotType,
-      cpuArch,
-    );
+    final String? analyzeSnapshotPath = _genSnapshot.getAnalyzeSnapshotPath(snapshotType, cpuArch);
     if (analyzeSnapshotPath == null) {
       _logger.printError(
         'DD pass: could not find an analyze_snapshot binary whose --sdk_version '
@@ -639,7 +634,12 @@ class AOTSnapshotter {
 
       if (stripAfterBuild) {
         // See https://www.unix.com/man-page/osx/1/strip/ for arguments
-        final RunResult stripResult = await _requiredXcode.strip(<String>['-x', appLib, '-o', appLib]);
+        final RunResult stripResult = await _requiredXcode.strip(<String>[
+          '-x',
+          appLib,
+          '-o',
+          appLib,
+        ]);
         if (stripResult.exitCode != 0) {
           _logger.printError(
             'Failed to strip debugging symbols from the generated AOT snapshot - strip terminated with exit code ${stripResult.exitCode}',

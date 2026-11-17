@@ -1224,10 +1224,7 @@ No file or variants found for asset: images/a_dot_burr.jpeg.
     'shorebird.yaml is updated when SHOREBIRD_PUBLIC_KEY env var is set',
     () async {
       final fakeVisualStudio = FakeVisualStudio();
-      final command = BuildWindowsCommand(
-        logger: BufferLogger.test(),
-        operatingSystemUtils: FakeOperatingSystemUtils(),
-      )..visualStudioOverride = fakeVisualStudio;
+      final BuildWindowsCommand command = createCommand(visualStudio: fakeVisualStudio);
       setUpMockProjectFilesForBuild();
       final File shorebirdYamlFile =
           fileSystem.file(r'build\windows\x64\runner\Release\data\flutter_assets\shorebird.yaml')
@@ -1239,9 +1236,8 @@ No file or variants found for asset: images/a_dot_burr.jpeg.
         buildCommand('Release'),
       ]);
 
-      await createTestCommandRunner(
-        command,
-      ).run(const <String>['windows', '--release', '--no-pub']);
+      await createTestCommandRunner(command)
+          .run(const <String>['windows', '--release', '--no-pub']);
 
       final String updatedYaml = shorebirdYamlFile.readAsStringSync();
       expect(updatedYaml, contains('app_id: my-app-id'));
@@ -1253,11 +1249,11 @@ No file or variants found for asset: images/a_dot_burr.jpeg.
       Platform: () => windowsPlatformWithPublicKey,
       FeatureFlags: () => TestFeatureFlags(isWindowsEnabled: true),
     },
-    // SHOREBIRD_PUBLIC_KEY → shorebird.yaml injection happens inside the
+    // [intended] SHOREBIRD_PUBLIC_KEY → shorebird.yaml injection happens inside the
     // assets build target, which the mocked FakeProcessManager build
     // commands don't drive. Same situation as the macOS analogue; skip
     // until we test updateShorebirdYaml directly.
-    skip: true,
+    skip: true, // [intended] needs a real build system, see above
   );
 }
 
