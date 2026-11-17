@@ -792,7 +792,7 @@ void main() {
           expect(named('flutter build ios-framework').single['cat'], 'flutter');
           expect(named('copy Flutter.xcframework').single['cat'], 'flutter');
           expect(named('build App.xcframework').single['cat'], 'flutter');
-          expect(named('pod install').single['cat'], 'subprocess');
+          // pod install only runs with plugins; this test passes --no-plugins.
           // One assemble event per App.framework slice (device + simulator).
           expect(named('kernel_snapshot').map((Map<String, Object?> e) => e['cat']), <String>[
             'assemble',

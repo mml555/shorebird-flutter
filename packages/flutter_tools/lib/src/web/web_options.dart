@@ -59,7 +59,7 @@ abstract final class WebOptions {
 
   static const webResourcesCdn = FlagOptionDescriptor(
     name: 'web-resources-cdn',
-    defaultsTo: true,
+    // Self-host fork: defaults to false (bundled locally); upstream defaults to true.
     help:
         'Use WebAssembly, CanvasKit, and other web resources from a content delivery network (CDN).\n'
         'Set to "--no-web-resources-cdn" to embed all web resources locally in the built app.',
