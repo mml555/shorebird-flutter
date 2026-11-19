@@ -10,6 +10,7 @@ import '../darwin/darwin.dart';
 import '../macos/xcode.dart';
 import 'file_system.dart';
 import 'logger.dart';
+import 'platform.dart';
 import 'process.dart';
 
 /// A snapshot build configuration.
@@ -509,6 +510,7 @@ class AOTSnapshotter {
             a != mainPath &&
             !a.startsWith('--snapshot_kind=') &&
             !a.startsWith('--assembly=') &&
+            !a.startsWith('--macho') &&
             !a.startsWith('--elf='),
       ),
       '--snapshot_kind=app-aot-elf',
