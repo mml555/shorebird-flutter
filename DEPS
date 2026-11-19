@@ -20,8 +20,8 @@ vars = {
   # this branch reverts or gates: see the selfhost rebase report (rebase_on_upstream.md) for the list.
   "dart_sdk_revision": "0cd04a7717f20d5f9ae64014cb2239a3f961f895",
   "dart_sdk_git": "https://github.com/mml555/dart-sdk-shorebird-lineage.git",
-  "updater_git": "https://github.com/shorebirdtech/updater.git",
-  "updater_rev": "91dbbddb958a397868c9d8db4742a10e0f2c3832",
+  "updater_git": "https://github.com/mml555/shorebird-updater-mirror.git",
+  "updater_rev": "a58774ab8a88a04ae5f96ce4e5a9825561a2f2f3",
   'dart_ai_rev': '9c96bfe5f091c9451eff5b59c9bffeb2e806b875',
   'skia_revision': '0e5d8d1be81b22f5529a41cf4810dd89b63527ba',
 
