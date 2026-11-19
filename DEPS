@@ -14,8 +14,12 @@ vars = {
   'flutter_git': 'https://flutter.googlesource.com',
   'skia_git': 'https://skia.googlesource.com',
   'llvm_git': 'https://llvm.googlesource.com',
-  "dart_sdk_revision": "46cf7ad1b3b2744a1bd4e4ee03a94e455f6d65d7",
-  "dart_sdk_git": "git@github.com:shorebirdtech/dart-sdk.git",
+  # SELFHOST: the Dart fork pin. Upstream's 46cf7ad is in shorebirdtech/dart-sdk,
+  # which is private; selfhost/dart-3.14 in mml555/dart-sdk-shorebird-lineage is
+  # public. Upstream's 3.50 engine calls APIs only upstream's fork has, which
+  # this branch reverts or gates: see shorebird/docs/selfhost-private-dart.md.
+  "dart_sdk_revision": "0cd04a7717f20d5f9ae64014cb2239a3f961f895",
+  "dart_sdk_git": "https://github.com/mml555/dart-sdk-shorebird-lineage.git",
   "updater_git": "https://github.com/shorebirdtech/updater.git",
   "updater_rev": "91dbbddb958a397868c9d8db4742a10e0f2c3832",
   'dart_ai_rev': '9c96bfe5f091c9451eff5b59c9bffeb2e806b875',
