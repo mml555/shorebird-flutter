@@ -28,6 +28,7 @@ void main() {
     packageConfigPath: '.dart_tool/package_config.json',
     shorebirdPublicKey: publicKey,
     shorebirdReleaseVersion: releaseVersion,
+    shorebirdDdMaxBytes: 100000,
   );
 
   testWithoutContext('encodeShorebirdPublicKey has no slash and round-trips', () {
@@ -45,18 +46,23 @@ void main() {
     final Map<String, String> defines = buildInfo.toBuildSystemEnvironment();
     expect(defines[kShorebirdPublicKey], encodeShorebirdPublicKey(publicKey));
     expect(defines[kShorebirdReleaseVersion], releaseVersion);
+    expect(defines[kShorebirdDdMaxBytes], '100000');
   });
 
   testWithoutContext('toEnvironmentConfig includes the Shorebird values', () {
     final Map<String, String> config = buildInfo.toEnvironmentConfig();
     expect(config['SHOREBIRD_ENCODED_PUBLIC_KEY'], encodeShorebirdPublicKey(publicKey));
+    expect(config['SHOREBIRD_BUILD_DD_MAX_BYTES'], '100000');
     expect(config.values, isNot(contains(contains('//'))));
   });
 
   testWithoutContext('toGradleConfig includes the Shorebird values', () {
     expect(
       buildInfo.toGradleConfig(),
-      contains('-Pshorebird-public-key=${encodeShorebirdPublicKey(publicKey)}'),
+      containsAll(<String>[
+        '-Pshorebird-public-key=${encodeShorebirdPublicKey(publicKey)}',
+        '-Pshorebird-dd-max-bytes=100000',
+      ]),
     );
   });
 
@@ -97,7 +103,8 @@ void main() {
       buildDirFor(<String, String>{kShorebirdPublicKey: encodeShorebirdPublicKey('b')}).path,
       buildDirFor(<String, String>{kShorebirdReleaseVersion: '1.0.0'}).path,
       buildDirFor(<String, String>{kShorebirdReleaseVersion: '1.0.1'}).path,
-    }, hasLength(5));
+      buildDirFor(<String, String>{kShorebirdDdMaxBytes: '100000'}).path,
+    }, hasLength(6));
   });
 
   testWithoutContext('shorebirdReleaseVersion returns null when the define is unset or empty', () {
@@ -129,20 +136,20 @@ void main() {
         DummyFlutterCommand().getBuildInfo(forcedBuildMode: BuildMode.release);
 
     testUsingContext(
-      'reads SHOREBIRD_PUBLIC_KEY from the environment',
+      'reads SHOREBIRD_PUBLIC_KEY and SHOREBIRD_DD_MAX_BYTES from the environment',
       () async {
         final BuildInfo buildInfo = await getBuildInfo();
         expect(buildInfo.shorebirdPublicKey, publicKey);
         expect(buildInfo.shorebirdReleaseVersion, releaseVersion);
+        expect(buildInfo.shorebirdDdMaxBytes, 100000);
         // No other variable reaches the native build settings or the defines,
-        // including SHOREBIRD_DD_MAX_BYTES, which older shorebird CLIs set.
+        // including SHOREBIRD_TOKEN.
         for (final value in <String>[
           ...buildInfo.toEnvironmentConfig().values,
           ...buildInfo.toBuildSystemEnvironment().values,
           ...buildInfo.toGradleConfig(),
         ]) {
           expect(value, isNot(contains('token')));
-          expect(value, isNot(contains('123456')));
         }
       },
       overrides: <Type, Generator>{
@@ -152,7 +159,7 @@ void main() {
           environment: <String, String>{
             'SHOREBIRD_PUBLIC_KEY': publicKey,
             'SHOREBIRD_RELEASE_VERSION': releaseVersion,
-            'SHOREBIRD_DD_MAX_BYTES': '123456',
+            'SHOREBIRD_DD_MAX_BYTES': '100000',
             'SHOREBIRD_TOKEN': 'token',
           },
         ),

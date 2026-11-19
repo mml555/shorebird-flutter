@@ -13,6 +13,9 @@ const kShorebirdPublicKey = 'ShorebirdPublicKey';
 /// (aar, ios-framework), where the module's version, not the host app's,
 /// names the release.
 const kShorebirdReleaseVersion = 'ShorebirdReleaseVersion';
+/// The define for the cap on the iOS DD table in bytes. Absent means no DD
+/// pass.
+const kShorebirdDdMaxBytes = 'ShorebirdDdMaxBytes';
 
 /// Encodes the patch public key for [kShorebirdPublicKey].
 ///
