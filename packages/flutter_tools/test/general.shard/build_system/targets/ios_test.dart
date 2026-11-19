@@ -18,6 +18,7 @@ import 'package:flutter_tools/src/build_system/targets/ios.dart';
 import 'package:flutter_tools/src/globals.dart' as globals;
 import 'package:flutter_tools/src/ios/xcodeproj.dart';
 import 'package:flutter_tools/src/project.dart';
+import 'package:flutter_tools/src/shorebird/shorebird_defines.dart';
 import 'package:test/fake.dart';
 import 'package:unified_analytics/unified_analytics.dart';
 
@@ -836,12 +837,14 @@ flavors:
     },
   );
 
-  // Shorebird-specific: aot_tools builds iOS snapshots, so an Xcode rebuild
-  // (flutter assemble) builds the same App as `shorebird release`.
-  for (final release in <bool>[true, false]) {
+  // Shorebird-specific: the ShorebirdDdMaxBytes define is what turns on the
+  // DD pass for Xcode rebuilds (flutter assemble), so guard the plumbing from
+  // the define to AOTSnapshotter.build.
+  for (final withDefine in <bool>[true, false]) {
     final recorder = _RecordingProcessManager();
     testUsingContext(
-      'AotAssembly${release ? 'Release' : 'Profile'} runs gen_snapshot through aot_tools',
+      'AotAssemblyRelease ${withDefine ? 'runs' : 'skips'} the DD pass '
+      '${withDefine ? 'with' : 'without'} the $kShorebirdDdMaxBytes define',
       () async {
         final FileSystem fileSystem = MemoryFileSystem.test();
         final environment = Environment.test(
@@ -849,8 +852,9 @@ flavors:
           defines: <String, String>{
             kTargetPlatform: 'ios',
             kSdkRoot: 'path/to/iPhoneOS.sdk',
-            kBuildMode: release ? 'release' : 'profile',
+            kBuildMode: 'release',
             kIosArchs: 'arm64',
+            if (withDefine) kShorebirdDdMaxBytes: '100000',
           },
           processManager: recorder,
           artifacts: artifacts,
@@ -860,12 +864,13 @@ flavors:
         environment.buildDir.childFile('app.dill').createSync(recursive: true);
 
         // The recorder fails every process, so the build stops after the
-        // first snapshot command.
-        final Target target = release ? const AotAssemblyRelease() : const AotAssemblyProfile();
-        await expectLater(target.build(environment), throwsException);
+        // first gen_snapshot run; that run is pass 1 of DD when it's on.
+        await expectLater(const AotAssemblyRelease().build(environment), throwsException);
         final List<String> first = recorder.commands.first;
-        expect(first, contains('gen-snapshot'));
-        expect(first, contains('--link-dir=${environment.buildDir.path}'));
+        expect(
+          first.any((String arg) => arg.startsWith('--print_dd_function_identity_to=')),
+          withDefine,
+        );
       },
       overrides: <Type, Generator>{
         FileSystem: () => fileSystem,

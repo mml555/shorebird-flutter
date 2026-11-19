@@ -51,7 +51,11 @@ Future<ProcessResult> _runFlutterCommand(
     arguments,
     workingDirectory: workingDirectory.path,
     environment: {
-      'FLUTTER_STORAGE_BASE_URL': 'https://download.shorebird.dev',
+      // CI points this at a self-host mirror when the pinned engine is
+      // self-built (.github/actions/selfhost-engine-mirror).
+      'FLUTTER_STORAGE_BASE_URL':
+          Platform.environment['FLUTTER_STORAGE_BASE_URL'] ??
+              'https://download.shorebird.dev',
       ...?environment,
     },
   );

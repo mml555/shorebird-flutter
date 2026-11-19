@@ -117,7 +117,7 @@ open class BaseFlutterTask : DefaultTask() {
     @Input
     var shorebirdTraceFile: String? = null
 
-    // Shorebird-specific: passed to flutter assemble as a define.
+    // Shorebird-specific: passed to flutter assemble as defines.
     @Optional
     @Input
     var shorebirdPublicKey: String? = null
@@ -127,6 +127,10 @@ open class BaseFlutterTask : DefaultTask() {
     @Optional
     @Input
     var shorebirdReleaseVersion: String? = null
+
+    @Optional
+    @Input
+    var shorebirdDdMaxBytes: String? = null
 
     @Optional
     @Input

@@ -119,20 +119,37 @@ final class GitRepo {
     return _gitOutputToList(diffTreeResult);
   }
 
+  /// The remotes and branches tried, in order, for the base of the diff. The
+  /// same as in engine/src/flutter/ci/bin/format.dart: `main` as in
+  /// flutter/flutter, then `shorebird/dev`, the default branch of the Shorebird
+  /// fork, which has no `main`; `upstream` before `origin`.
+  static const _baseRemotes = <String>['upstream', 'origin'];
+  static const _baseBranches = <String>['main', 'shorebird/dev'];
+
   Future<void> _fetch(ProcessRunner processRunner) async {
-    final ProcessRunnerResult fetchResult = await processRunner.runProcess(<String>[
-      'git',
-      'fetch',
-      'upstream',
-      'main',
-    ], failOk: true);
-    if (fetchResult.exitCode != 0) {
-      if (verbose) {
-        logSink.writeln('git fetch upstream main failed, using origin main');
-        logSink.writeln('Output:\n${fetchResult.stdout}');
+    final tried = <String>[];
+    for (final remote in _baseRemotes) {
+      for (final branch in _baseBranches) {
+        final ProcessRunnerResult fetchResult = await processRunner.runProcess(<String>[
+          'git',
+          'fetch',
+          remote,
+          branch,
+        ], failOk: true);
+        if (fetchResult.exitCode == 0) {
+          return;
+        }
+        tried.add('$remote $branch');
+        if (verbose) {
+          logSink.writeln('git fetch $remote $branch failed, trying the next');
+          logSink.writeln('Output:\n${fetchResult.stdout}');
+        }
       }
-      await processRunner.runProcess(<String>['git', 'fetch', 'origin', 'main']);
     }
+    throw ProcessRunnerException(
+      'Could not fetch a base branch to diff against. Tried git fetch for: '
+      '${tried.join(', ')}.',
+    );
   }
 
   List<io.File> _gitOutputToList(ProcessRunnerResult result) {

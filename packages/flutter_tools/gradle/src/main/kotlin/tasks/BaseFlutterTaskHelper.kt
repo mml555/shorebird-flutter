@@ -143,6 +143,9 @@ object BaseFlutterTaskHelper {
             baseFlutterTask.shorebirdReleaseVersion?.let {
                 args("-dShorebirdReleaseVersion=$it")
             }
+            baseFlutterTask.shorebirdDdMaxBytes?.let {
+                args("-dShorebirdDdMaxBytes=$it")
+            }
             baseFlutterTask.flavor?.let {
                 args("-dFlavor=$it")
             }

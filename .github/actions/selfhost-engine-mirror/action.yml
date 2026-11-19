@@ -1,0 +1,218 @@
+# cspell:words selfhost xcaddy buildenv
+name: Self-host engine mirror
+description: >-
+  When bin/internal/engine.version names a self-built engine that is published
+  as this repository's GitHub release engine-<hash> rather than on
+  download.shorebird.dev, start the self-host CDN mirror on this runner from
+  that release and point bin/flutter at it. Does nothing for any other engine.
+  Linux runners run the mirror under Docker; macOS runners, which have none,
+  run it as plain processes (selfhost/cdn/run_native.sh).
+
+inputs:
+  selfhost-ref:
+    description: >-
+      mml555/shorebird commit whose selfhost/cdn runs the mirror. Pinned so a
+      change on that repo's main cannot change this repo's CI unseen.
+    default: 84dc1bb339fc60141f09b3c6b002a4077ed9f037
+
+runs:
+  using: composite
+  steps:
+    - name: 🔎 Find a self-built engine release
+      id: find
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PINS: ${{ github.action_path }}/release_sums
+      run: |
+        set -euo pipefail
+        engine="$(< bin/internal/engine.version)"
+        # A missing release means a stock engine; any other failure must not
+        # pass for one, or CI would quietly fall back to download.shorebird.dev.
+        if ! out="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/engine-$engine" --jq .id 2>&1)"; then
+          if grep -q 'HTTP 404' <<< "$out"; then
+            echo "Engine $engine has no engine-$engine release here, so it comes from download.shorebird.dev."
+            exit 0
+          fi
+          echo "::error::Looking up release engine-$engine failed: $out"
+          exit 1
+        fi
+        # The mirror trusts a throwaway root CA system-wide and leaves it, and
+        # its servers, running after the job. That is only acceptable on a
+        # runner that is thrown away after the job.
+        if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
+          echo "::error::Engine $engine needs the self-host mirror, which installs a root CA on the runner. Run this job on a GitHub-hosted runner."
+          exit 1
+        fi
+        # The release's files can be replaced in place; check them against the
+        # SHA256SUMS digest this repository pins (release_sums).
+        want="$(awk -v e="$engine" '$1 == e { print $2 }' "$PINS")"
+        # Optional third field: the digest of SHA256SUMS.extra (the release's
+        # overlay-extra tar). Without it, the extra files are not installed.
+        want_extra="$(awk -v e="$engine" '$1 == e { print $3 }' "$PINS")"
+        if [ -z "$want" ]; then
+          echo "::error file=.github/actions/selfhost-engine-mirror/release_sums::No pinned SHA256SUMS digest for engine $engine. Add its line in the PR that publishes the release."
+          exit 1
+        fi
+        rel="$RUNNER_TEMP/engine-release"
+        mkdir -p "$rel"
+        if ! gh release download "engine-$engine" -R "$GITHUB_REPOSITORY" -D "$rel" --clobber \
+            -p SHA256SUMS -p "overlay-$engine.txt" \
+            || [ ! -f "$rel/SHA256SUMS" ] || [ ! -f "$rel/overlay-$engine.txt" ]; then
+          echo "::error::Release engine-$engine must have SHA256SUMS and overlay-$engine.txt."
+          exit 1
+        fi
+        got="$(shasum -a 256 "$rel/SHA256SUMS" | cut -d' ' -f1)"
+        if [ "$got" != "$want" ]; then
+          echo "::error::Release engine-$engine has SHA256SUMS $got; this repository pins $want."
+          exit 1
+        fi
+        for f in "overlay-$engine.tar" "overlay-$engine.txt" "experimental_hashes-$engine.map"; do
+          grep -qE "^[0-9a-f]{64}  $f\$" "$rel/SHA256SUMS" || { echo "::error::SHA256SUMS does not list $f."; exit 1; }
+        done
+        (cd "$rel" && grep -E "  overlay-$engine\.txt\$" SHA256SUMS | shasum -a 256 -c -)
+        # bin/flutter needs a Dart SDK and host toolchain from the same engine
+        # build, so a host the release has none for cannot use it at all. Say
+        # so here rather than as a 404 deep inside the first flutter command.
+        case "$RUNNER_OS/$RUNNER_ARCH" in
+          Linux/X64) host=linux-x64 ;;
+          Linux/ARM64) host=linux-arm64 ;;
+          macOS/ARM64) host=darwin-arm64 ;;
+          macOS/X64) host=darwin-x64 ;;
+          *) host="" ;;
+        esac
+        if [ -z "$host" ]; then
+          echo "::error::Engine $engine is self-built, and no engine build exists for $RUNNER_OS/$RUNNER_ARCH."
+          exit 1
+        fi
+        for f in "dart-sdk-$host.zip" "$host/artifacts.zip"; do
+          if ! grep -qxF "./flutter_infra_release/flutter/$engine/$f" "$rel/overlay-$engine.txt"; then
+            echo "::error file=bin/internal/engine.version::Engine $engine is self-built and release engine-$engine has no $f. This job needs the engine built for its host."
+            exit 1
+          fi
+        done
+        echo "engine=$engine" >> "$GITHUB_OUTPUT"
+        echo "extra-sums=$want_extra" >> "$GITHUB_OUTPUT"
+
+    # run_native.sh builds Caddy with xcaddy (~75 s). It reuses
+    # <state>/bin/caddy when <state>/bin/caddy.stamp names the Caddy,
+    # cache-handler and nuts versions it pins, so cache those two files. Those
+    # versions are pinned in run_native.sh, which selfhost-ref pins in turn, so
+    # the key carries selfhost-ref (a commit sha, checked below) instead of
+    # repeating the versions here (a copy would drift).
+    - name: 🔧 Check the Caddy build inputs
+      id: caddy-in
+      if: steps.find.outputs.engine != '' && runner.os != 'Linux'
+      shell: bash
+      env:
+        SELFHOST_REF: ${{ inputs.selfhost-ref }}
+      run: |
+        set -euo pipefail
+        # A branch or tag would keep one key while the script and its pins move.
+        if ! [[ "$SELFHOST_REF" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::selfhost-ref must be a full 40-hex commit sha, not '$SELFHOST_REF'; the Caddy cache is keyed on it."
+          exit 1
+        fi
+        # The one place the Go version is named: setup-go and the cache key
+        # both read it. Caddy v2.11 needs Go 1.26 (its go.mod), so move it
+        # with the Caddy pin in run_native.sh.
+        echo "go=1.26" >> "$GITHUB_OUTPUT"
+
+    - name: 🗄️ Restore the cached Caddy
+      id: caddy-cache
+      if: steps.find.outputs.engine != '' && runner.os != 'Linux'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ${{ runner.temp }}/cdn-native/bin/caddy
+          ${{ runner.temp }}/cdn-native/bin/caddy.stamp
+        key: selfhost-caddy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.caddy-in.outputs.go }}-${{ inputs.selfhost-ref }}
+
+    # A hit is only used if the binary runs and has the module run_native.sh
+    # requires. Otherwise drop it and build, which needs Go. Cache entries are
+    # immutable, so a bad one stays: the next run repeats this and rebuilds
+    # until it is purged (gh cache delete <key> -R $GITHUB_REPOSITORY).
+    - name: 🔬 Check the cached Caddy
+      id: caddy-check
+      if: steps.find.outputs.engine != '' && runner.os != 'Linux'
+      shell: bash
+      env:
+        HIT: ${{ steps.caddy-cache.outputs.cache-hit }}
+      run: |
+        bin="$RUNNER_TEMP/cdn-native/bin"
+        if [ "$HIT" = true ] && [ -x "$bin/caddy" ] && [ -f "$bin/caddy.stamp" ] \
+            && "$bin/caddy" list-modules 2>/dev/null | grep -qx 'http.handlers.cache'; then
+          echo "reuse=true" >> "$GITHUB_OUTPUT"
+        else
+          [ "$HIT" = true ] && echo "::warning::The cached Caddy is unusable; rebuilding it. Purge the entry with: gh cache delete selfhost-caddy-... -R $GITHUB_REPOSITORY"
+          rm -f "$bin/caddy" "$bin/caddy.stamp"
+          echo "reuse=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: 🐹 Setup Go
+      if: steps.find.outputs.engine != '' && runner.os != 'Linux' && steps.caddy-check.outputs.reuse != 'true'
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: ${{ steps.caddy-in.outputs.go }}
+        cache: false
+
+    - name: 🪞 Start the mirror from the release
+      if: steps.find.outputs.engine != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        ENGINE: ${{ steps.find.outputs.engine }}
+        SELFHOST_REF: ${{ inputs.selfhost-ref }}
+        EXTRA_SUMS: ${{ steps.find.outputs.extra-sums }}
+        ACTION_PATH: ${{ github.action_path }}
+        # A caller's CADDY would be copied in with no stamp, then cached.
+        CADDY: ''
+      run: |
+        set -euo pipefail
+        src="$RUNNER_TEMP/selfhost"
+        rel="$RUNNER_TEMP/engine-release"
+        git init -q "$src"
+        git -C "$src" remote add origin https://github.com/mml555/shorebird.git
+        git -C "$src" sparse-checkout set selfhost/cdn packages/artifact_proxy
+        git -C "$src" fetch -q --depth 1 origin "$SELFHOST_REF"
+        git -C "$src" checkout -q FETCH_HEAD
+        cdn="$src/selfhost/cdn"
+
+        # SHA256SUMS was checked against the pin by the find step.
+        gh release download "engine-$ENGINE" -R "$GITHUB_REPOSITORY" -D "$rel" --clobber \
+          -p "overlay-$ENGINE.tar" -p "experimental_hashes-$ENGINE.map" -p "engine_stamp-$ENGINE.json"
+        (cd "$rel" && shasum -a 256 -c SHA256SUMS)
+        tar -xf "$rel/overlay-$ENGINE.tar" -C "$cdn/overlay"
+        # Newer releases also carry overlay-extra-<engine>.tar (sky_engine.zip
+        # and the like), pinned in release_sums. It must not overwrite the
+        # main tar's files, so it goes in after them.
+        if [ -n "$EXTRA_SUMS" ]; then
+          "$ACTION_PATH/install_extra.sh" "$ENGINE" "$EXTRA_SUMS" "$rel" "$cdn/overlay"
+        fi
+        # The mirror's processes outlive this step; keep the token out of them.
+        unset GH_TOKEN
+        cat "$rel/experimental_hashes-$ENGINE.map" >> "$cdn/experimental_hashes.map"
+
+        # Gradle refuses a plain-http Maven repository, so serve https with a
+        # throwaway CA trusted by this runner's JDK and OS store. As root: the
+        # image's preinstalled JDK has a root-owned cacerts. JAVA_HOME is
+        # passed by hand because sudo drops it (--preserve-env included), and
+        # without it trust.sh picks the image's JDK rather than the one Gradle
+        # runs on.
+        "$cdn/tls/generate.sh" localhost
+        sudo env "JAVA_HOME=${JAVA_HOME:-}" "$cdn/tls/trust.sh"
+        if [ "$RUNNER_OS" = Linux ]; then
+          docker compose -f "$cdn/docker-compose.cdn.yaml" -f "$cdn/docker-compose.cdn.tlslocal.yaml" up -d --build
+        else
+          # On macOS xcaddy creates its buildenv_* directory in the working
+          # directory (newTempFolder in xcaddy v0.4.7's builder.go; elsewhere
+          # it uses the OS temp dir), and a cancelled build leaves it behind,
+          # so never run it inside the checkout.
+          mkdir -p "$RUNNER_TEMP/caddy-build"
+          (cd "$RUNNER_TEMP/caddy-build" && "$cdn/run_native.sh" start --tls --state "$RUNNER_TEMP/cdn-native")
+        fi
+
+        stamp="https://localhost:8443/flutter_infra_release/flutter/$ENGINE/engine_stamp.json"
+        curl -fsS --retry 30 --retry-all-errors --retry-delay 2 "$stamp"
+        echo
+        echo "FLUTTER_STORAGE_BASE_URL=https://localhost:8443" >> "$GITHUB_ENV"

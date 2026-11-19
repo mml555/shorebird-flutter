@@ -14,10 +14,14 @@ vars = {
   'flutter_git': 'https://flutter.googlesource.com',
   'skia_git': 'https://skia.googlesource.com',
   'llvm_git': 'https://llvm.googlesource.com',
-  "dart_sdk_revision": "46cf7ad1b3b2744a1bd4e4ee03a94e455f6d65d7",
-  "dart_sdk_git": "git@github.com:shorebirdtech/dart-sdk.git",
-  "updater_git": "https://github.com/shorebirdtech/updater.git",
-  "updater_rev": "91dbbddb958a397868c9d8db4742a10e0f2c3832",
+  # SELFHOST: the Dart fork pin. Upstream's 46cf7ad is in shorebirdtech/dart-sdk,
+  # which is private; selfhost/dart-3.14 in mml555/dart-sdk-shorebird-lineage is
+  # public. Upstream's 3.50 engine calls APIs only upstream's fork has, which
+  # this branch reverts or gates: see the selfhost rebase report (rebase_on_upstream.md) for the list.
+  "dart_sdk_revision": "0cd04a7717f20d5f9ae64014cb2239a3f961f895",
+  "dart_sdk_git": "https://github.com/mml555/dart-sdk-shorebird-lineage.git",
+  "updater_git": "https://github.com/mml555/shorebird-updater-mirror.git",
+  "updater_rev": "a58774ab8a88a04ae5f96ce4e5a9825561a2f2f3",
   'dart_ai_rev': '9c96bfe5f091c9451eff5b59c9bffeb2e806b875',
   'skia_revision': '0e5d8d1be81b22f5529a41cf4810dd89b63527ba',
 
@@ -83,7 +87,13 @@ vars = {
   'ocmock_rev': 'c4ec0e3a7a9f56cfdbd0aa01f4f97bb4b75c5ef8', # v3.7.1
 
   # Download a prebuilt Dart SDK by default
-  'download_dart_sdk': True,
+  # SELFHOST: off. The prebuilts below live in shorebird-dart-sdk-prebuilt,
+  # which is private and keyed by dart_sdk_revision; nothing has been uploaded
+  # there for mml555/dart-sdk-shorebird-lineage revisions, so a sync would 403
+  # or fetch the wrong SDK. Dart builds from source (selfhost/engine/build.sh
+  # passes --no-prebuilt-dart-sdk when no prebuilt is present). The pins below
+  # are left as upstream's shape so a later re-pin is a one-place change.
+  'download_dart_sdk': False,
 
   # Download a prebuilt esbuild by default
   'download_esbuild': True,
