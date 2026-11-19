@@ -90,21 +90,21 @@ static fml::RefPtr<const DartSnapshot> ResolveBaseVMSnapshot(
 
 void SetBaseSnapshot(fml::RefPtr<const DartSnapshot> base_vm_snapshot) {
   // Only the VM snapshot, which reports nothing to the updater. Resolving the
-  // isolate snapshot (IsolateSnapshotFromSettings) reports the launch start,
+  // isolate snapshot (ResolveIsolateData) reports the launch start,
   // and this runs whenever a FlutterDartProject is created: before the next
   // boot patch is validated, and whether or not an engine ever runs. A start
   // reported here would mark the patch as booting for an engine that may never
   // run, so the next launch would mark a good patch bad, and it would name a
   // patch that validation may go on to reject. The start belongs to the Shell
-  // (IsolateSnapshotFromSettings), as on Android. The VM and isolate symbols
-  // resolve the same buffer, so the VM snapshot is the base app snapshot.
-  // Holding it here keeps App.framework mapped; see ResolveBaseVMSnapshot.
+  // (ResolveIsolateData), as on Android. The VM and isolate symbols resolve
+  // the same buffer, so the VM snapshot is the base app snapshot. Holding it
+  // here keeps App.framework mapped; see ResolveBaseVMSnapshot.
   vm_snapshot = std::move(base_vm_snapshot);
-  // A patch needs both base blobs (DartSnapshot::IsolateSnapshotFromSettings
-  // pairs it with this same base), while DartSnapshot::IsValid() checks only
-  // the data half, so a snapshot can be non-null with no instructions at all.
-  // Check what is read, not what is returned. vm_snapshot is already known
-  // non-null: ResolveBaseVMSnapshot checked it before handing it over.
+  // Shorebird_SetBaseSnapshots below hands the interpreter both blobs, while
+  // DartSnapshot::IsValid() checks only the data half, so a snapshot can be
+  // non-null with no instructions at all. Check what is read, not what is
+  // returned. vm_snapshot is already known non-null: ResolveBaseVMSnapshot
+  // checked it before handing it over.
   FML_CHECK(vm_snapshot->IsValidForAOT())
       << "Shorebird base snapshot resolved without its instructions mapping";
 
@@ -119,6 +119,13 @@ void SetBaseSnapshot(fml::RefPtr<const DartSnapshot> base_vm_snapshot) {
   FML_LOG(INFO) << "[shorebird] SetBaseSnapshot mappings: "
                 << "data_size=" << data_size << " insns_size=" << insns_size
                 << " total=" << (data_size + insns_size);
+
+  // The VM isolate snapshot is gone, so there are no separate VM buffers to
+  // hand over. Shorebird_SetBaseSnapshots ignores them, as the Dart
+  // embedder's own call in runtime/bin/main_impl.cc does.
+  Shorebird_SetBaseSnapshots(data_ptr, insns_ptr,
+                             /*base_vm_snapshot_data=*/nullptr,
+                             /*base_vm_snapshot_instructions=*/nullptr);
 }
 #endif  // SHOREBIRD_USE_INTERPRETER
 
@@ -627,7 +634,7 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
     FML_LOG(INFO) << "Shorebird updater: no active patch.";
   }
 
-  // Launch reporting does not happen here. IsolateSnapshotFromSettings in
+  // Launch reporting does not happen here. ResolveIsolateData in
   // runtime/dart_snapshot.cc reports the start, so a FlutterEngineGroup or
   // add-to-app host that calls ConfigureShorebird() without ever creating a
   // Shell does not record a boot that never happened. The update thread
@@ -649,9 +656,9 @@ bool LoadPatchOrBase(const std::string& patch_path,
                  << base_path << " instead of " << patch_path;
   // The failure report marks the booting patch bad, and a patch is only
   // booting once the start is reported. Both are guarded once per process,
-  // so the Shell's own start report (IsolateSnapshotFromSettings) is a no-op,
+  // so the Shell's own start report (ResolveIsolateData) is a no-op,
   // and its success report does not record the base-code boot as the patch's.
-  // This is the same sequence TryLoadPatch runs on iOS with the interpreter,
+  // This is the same sequence TryLoadFromPatch runs on iOS with the interpreter,
   // and ApplyPatchToSettings runs on iOS without it.
 #if !SHOREBIRD_ROUTE_B
   // A Route B engine's PrepareNextBootPatch already recorded the start.

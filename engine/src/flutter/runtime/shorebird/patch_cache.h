@@ -35,13 +35,6 @@ class PatchCacheEntry {
   /// Returns the isolate snapshot instructions pointer.
   const uint8_t* isolate_instructions() const { return isolate_instrs_; }
 
-  /// Returns a copy of the Shorebird link header that precedes the ELF in
-  /// the patch file, or nullptr if the file has none. The VM reads it when an
-  /// isolate group is created from this patch (Dart_IsolateFlags::link_header).
-  const std::shared_ptr<const fml::Mapping>& link_header() const {
-    return link_header_;
-  }
-
   /// Returns the path this entry was loaded from.
   const std::string& path() const { return path_; }
 
@@ -49,14 +42,12 @@ class PatchCacheEntry {
   PatchCacheEntry(const std::string& path,
                   Dart_LoadedElf* elf,
                   const uint8_t* isolate_data,
-                  const uint8_t* isolate_instrs,
-                  std::shared_ptr<const fml::Mapping> link_header);
+                  const uint8_t* isolate_instrs);
 
   std::string path_;
   Dart_LoadedElf* elf_;
   const uint8_t* isolate_data_;
   const uint8_t* isolate_instrs_;
-  std::shared_ptr<const fml::Mapping> link_header_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(PatchCacheEntry);
 };
@@ -90,18 +81,28 @@ class PatchCache {
   FML_DISALLOW_COPY_AND_ASSIGN(PatchCache);
 };
 
-/// Checks if the first path in native_library_paths is a Shorebird patch
-/// (.vmcode file) and if so, loads it through the cache.
+/// Which half of the isolate snapshot pair a caller wants out of a patch.
 ///
-/// If the patch fails to load, reports the launch as failed to the updater and
-/// returns nullptr, so the caller boots the base app instead.
+/// A patch carries only the isolate pair, never the VM pair. Callers name the
+/// half they want instead of passing the snapshot symbol, because the VM and
+/// isolate symbols share the same names and a name cannot say which pair it
+/// belongs to.
+enum class PatchSymbol {
+  kIsolateData,
+  kIsolateInstructions,
+};
+
+/// Checks if the first path in native_library_paths is a Shorebird patch
+/// (.vmcode file) and if so, loads the requested snapshot from the patch.
 ///
 /// @param native_library_paths The list of library paths to check. The first
 ///        path is checked for the .vmcode extension.
-/// @return The loaded patch, or nullptr if there is no patch or it failed to
-///         load, which leaves the caller to fall back to the base app.
-std::shared_ptr<PatchCacheEntry> TryLoadPatch(
-    const std::vector<std::string>& native_library_paths);
+/// @param symbol Which half of the isolate snapshot pair to load.
+/// @return A mapping for the requested snapshot if this is a patch, nullptr
+///         otherwise, which leaves the caller to fall back to the base app.
+std::shared_ptr<const fml::Mapping> TryLoadFromPatch(
+    const std::vector<std::string>& native_library_paths,
+    PatchSymbol symbol);
 
 }  // namespace flutter
 

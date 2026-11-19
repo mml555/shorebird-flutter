@@ -5216,7 +5216,7 @@ TEST_F(ShellTest, ShoulDiscardLayerTreeIfFrameIsSizedIncorrectly) {
 
 #if !SHOREBIRD_ROUTE_B
 // Test the full boot flow: ReportLaunchStart is called from
-// IsolateSnapshotFromSettings when the Shell is created and ReportLaunchPaused
+// ResolveIsolateData when the Shell is created and ReportLaunchPaused
 // once it is built; ReportLaunchResumed just before the engine runs the root
 // isolate, and ReportLaunchSuccess once it has. All are guarded to run at
 // most once per process.
