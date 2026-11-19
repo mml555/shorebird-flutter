@@ -157,10 +157,6 @@
       {
         "type": "clang_tidy",
         "out_dir": "host_debug"
-      },
-      {
-        "type": "shell",
-        "command": "mkdir -p out/host_release/aot_tools && out/host_release/dart-sdk/bin/dart pub get --offline --directory=flutter/third_party/dart/pkg/aot_tools && out/host_release/dart-sdk/bin/dart compile kernel flutter/third_party/dart/pkg/aot_tools/bin/aot_tools.dart -o out/host_release/aot_tools/aot-tools.dill"
       }
     ],
     "artifacts": [
@@ -168,8 +164,7 @@
       {"src": "host_release/zip_archives/linux-x64/font-subset.zip", "dst": "flutter_infra_release/flutter/$engine/linux-x64/font-subset.zip"},
       {"src": "host_release/zip_archives/flutter_patched_sdk_product.zip", "dst": "flutter_infra_release/flutter/$engine/flutter_patched_sdk_product.zip"},
       {"src": "host_debug/zip_archives/linux-x64/artifacts.zip", "dst": "flutter_infra_release/flutter/$engine/linux-x64/artifacts.zip"},
-      {"src": "host_debug/zip_archives/flutter_patched_sdk.zip", "dst": "flutter_infra_release/flutter/$engine/flutter_patched_sdk.zip"},
-      {"src": "host_release/aot_tools/aot-tools.dill", "dst": "shorebird/$engine/aot-tools.dill"}
+      {"src": "host_debug/zip_archives/flutter_patched_sdk.zip", "dst": "flutter_infra_release/flutter/$engine/flutter_patched_sdk.zip"}
     ]
   },
   "host-desktop": {

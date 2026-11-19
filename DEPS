@@ -17,7 +17,7 @@ vars = {
   # SELFHOST: the Dart fork pin. Upstream's 46cf7ad is in shorebirdtech/dart-sdk,
   # which is private; selfhost/dart-3.14 in mml555/dart-sdk-shorebird-lineage is
   # public. Upstream's 3.50 engine calls APIs only upstream's fork has, which
-  # this branch reverts or gates: see shorebird/docs/selfhost-private-dart.md.
+  # this branch reverts or gates: see the selfhost rebase report (rebase_on_upstream.md) for the list.
   "dart_sdk_revision": "0cd04a7717f20d5f9ae64014cb2239a3f961f895",
   "dart_sdk_git": "https://github.com/mml555/dart-sdk-shorebird-lineage.git",
   "updater_git": "https://github.com/shorebirdtech/updater.git",
