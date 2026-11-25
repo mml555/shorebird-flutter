@@ -27,10 +27,11 @@ _shorebird_protected_data_available
 # next-boot prepare). Only the Route B engine patches call it, directly.
 _shorebird_prepare_next_boot_patch
 #
-# Not the updater: the Dart lineage marks its Route B entry point
-# visibility("default") and used, for Route B engine patches that call it
-# directly. Nothing looks it up at runtime, and Android hides it already.
+# Not the updater: the Dart lineage marks its Route B entry points
+# visibility("default") and used, for Route B engine patches that call them
+# directly. Nothing looks them up at runtime, and Android hides them already.
 _Dart_RouteBActivatePatchTraced
+_Dart_RouteBDeactivatePatch
 #
 # Rust mangled symbols, v0 mangling (_R...) and legacy mangling
 # (_ZN...17h<16 hex digits>E), depending on the Rust toolchain.

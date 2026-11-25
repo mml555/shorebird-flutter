@@ -458,6 +458,13 @@ TEST(Shorebird, APartialContainerRollsBackWhatItAttachedNewestFirst) {
   EXPECT_EQ(RouteBTargetsToRollBack(3, 2, {1}), (std::vector<size_t>{1}));
 }
 
+TEST(Shorebird, RouteBResultCodesAreReportedByName) {
+  EXPECT_STREQ(RouteBResultName(0), "ok");
+  // DART_ROUTE_B_NOT_ATTACHED: a rollback found nothing to put back.
+  EXPECT_STREQ(RouteBResultName(100), "not-attached");
+  EXPECT_STREQ(RouteBResultName(12345), "unknown");
+}
+
 TEST(Shorebird, AFullyAppliedContainerRollsNothingBack) {
   EXPECT_TRUE(RouteBTargetsToRollBack(3, 3, {0, 1, 2}).empty());
   EXPECT_TRUE(RouteBTargetsToRollBack(2, 2, {1}).empty())

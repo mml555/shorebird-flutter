@@ -1,6 +1,7 @@
 #ifndef FLUTTER_SHELL_COMMON_SHOREBIRD_SHOREBIRD_H_
 #define FLUTTER_SHELL_COMMON_SHOREBIRD_SHOREBIRD_H_
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <utility>
@@ -109,6 +110,11 @@ bool ParseAssertPoolOffset(const std::string& raw, int64_t* out);
 /// Whether |live| of |total| targets means the container took full effect.
 /// Exposed for testing.
 bool RouteBFullyApplied(size_t total, size_t live);
+
+/// The report name of a Route B attach or rollback result code, such as
+/// "target-missing"; "unknown" for a code it does not know. Exposed for
+/// testing.
+const char* RouteBResultName(int32_t result);
 
 /// The targets to roll back after a container did not take full effect: the
 /// indices in |attached_in_order| (the targets this run attached), newest

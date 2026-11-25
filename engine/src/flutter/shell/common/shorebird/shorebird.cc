@@ -306,6 +306,34 @@ bool RouteBFullyApplied(size_t total, size_t live) {
   return total > 0 && live == total;
 }
 
+// Named, not numbered. A code nobody can read is a bool with extra steps.
+const char* RouteBResultName(int32_t result) {
+  switch (result) {
+    case Dart_RouteB_Ok:
+      return "ok";
+    case Dart_RouteB_NoIsolate:
+      return "no-isolate";
+    case Dart_RouteB_EmptyPayload:
+      return "empty-payload";
+    case Dart_RouteB_InvalidBytecode:
+      return "invalid-bytecode";
+    case Dart_RouteB_TargetMissing:
+      return "target-missing";
+    case Dart_RouteB_AlreadyInterpreted:
+      return "already-interpreted";
+    case Dart_RouteB_AttachFailed:
+      return "attach-failed";
+    case Dart_RouteB_Unsupported:
+      return "unsupported-build";
+    case Dart_RouteB_OutOfMemory:
+      return "out-of-memory";
+    case DART_ROUTE_B_NOT_ATTACHED:
+      return "not-attached";
+    default:
+      return "unknown";
+  }
+}
+
 std::vector<size_t> RouteBTargetsToRollBack(
     size_t total,
     size_t live,
@@ -506,37 +534,7 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
         // Live, not failed: see RouteBFullyApplied.
         live++;
       }
-      // Named, not numbered. A code nobody can read is a bool with extra
-      // steps.
-      const char* reason = "unknown";
-      switch (result) {
-        case Dart_RouteB_NoIsolate:
-          reason = "no-isolate";
-          break;
-        case Dart_RouteB_EmptyPayload:
-          reason = "empty-payload";
-          break;
-        case Dart_RouteB_InvalidBytecode:
-          reason = "invalid-bytecode";
-          break;
-        case Dart_RouteB_TargetMissing:
-          reason = "target-missing";
-          break;
-        case Dart_RouteB_AlreadyInterpreted:
-          reason = "already-interpreted";
-          break;
-        case Dart_RouteB_AttachFailed:
-          reason = "attach-failed";
-          break;
-        case Dart_RouteB_Unsupported:
-          reason = "unsupported-build";
-          break;
-        case Dart_RouteB_OutOfMemory:
-          reason = "out-of-memory";
-          break;
-        default:
-          break;
-      }
+      const char* reason = RouteBResultName(result);
       RouteBReport(path, "target " + target.selector + " in " + target.library +
                              " REFUSED (" + reason + ")");
     }
@@ -559,19 +557,28 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
         if (rc == Dart_RouteB_Ok) {
           restored++;
         } else {
-          RouteBReport(path,
-                       "target " + target.selector + " in " + target.library +
-                           " ROLLBACK FAILED (rc=" + std::to_string(rc) + ")");
+          RouteBReport(path, "target " + target.selector + " in " +
+                                 target.library + " ROLLBACK FAILED (" +
+                                 RouteBResultName(rc) + ")");
         }
       }
       if (!rollback.empty()) {
-        RouteBReport(path,
-                     "rolled back " + std::to_string(restored) + "/" +
-                         std::to_string(rollback.size()) +
-                         (restored == rollback.size()
-                              ? " attached targets, main runs the "
-                                "release code"
-                              : " attached targets, ROLLBACK INCOMPLETE"));
+        // A target that answered AlreadyInterpreted was attached before this
+        // hook ran and is not ours to put back, so it stays live.
+        const size_t stale = live - applied;
+        std::string outcome;
+        if (restored != rollback.size()) {
+          outcome = "ROLLBACK INCOMPLETE";
+        } else if (stale == 0) {
+          outcome = "main runs the release code";
+        } else {
+          outcome = "main runs the release code except " +
+                    std::to_string(stale) +
+                    " target(s) already interpreted before this launch";
+        }
+        RouteBReport(path, "rolled back " + std::to_string(restored) + "/" +
+                               std::to_string(rollback.size()) +
+                               " attached targets, " + outcome);
       }
       ReportRefusal();
     }
