@@ -25,7 +25,8 @@ jobs:
   # shorebird/ci) can't change their result. Such PRs skip them; pushes to
   # shorebird/dev always run them (release branches get no push run). No job
   # in this file uses a billed GitHub runner: standard runners are free because
-  # the repo is public. (The engine workflows it calls build on Namespace.)
+  # the repo is public. (The engine workflows it calls build on Namespace; the
+  # iOS tests use the owner's Mac for this repository's own branches.)
   #
   # It also decides whether a PR runs the engine jobs (engine-tests,
   # ios-engine-build, android-engine-build): only when it touches DEPS,
@@ -147,11 +148,22 @@ jobs:
     needs: changes
     if: needs.changes.outputs.tests == 'true'
     # iOS tests require macOS for Xcode. Five sequential iOS builds make this
-    # the slowest check (about 7 minutes on the 5-core xlarge runner). It runs
-    # on the free standard runner: the xlarge runner was this repo's only
-    # billed minutes, and once the account's spending limit was reached its
-    # jobs were not started at all.
-    runs-on: macos-latest
+    # the slowest check (about 7 minutes on the 5-core xlarge runner).
+    #
+    # Pushes and PRs from this repository's own branches run on the owner's
+    # Mac, a self-hosted runner registered to this repository only with the
+    # label shorebird-flutter-mac: GitHub's macOS runners repeatedly went
+    # unassigned for the 15 minutes a job may wait, and the job was then
+    # cancelled without running. A PR from a fork runs on GitHub's macOS
+    # runner instead, so code nobody here wrote never runs on that Mac. (A
+    # fork PR can edit this line too, which is why the repository requires
+    # approval before an outside contributor's workflows run.)
+    #
+    # The self-host engine mirror refuses a self-hosted runner, since it
+    # installs a root CA there. It does nothing on a branch whose
+    # bin/internal/engine.version is the stock engine, as this branch's is; a
+    # branch pinning a self-built engine needs macos-latest here.
+    runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "shorebird-flutter-mac"]') || 'macos-latest' }}
 
     name: 🍎 Shorebird iOS Tests
 
@@ -268,7 +280,25 @@ jobs:
       - android-engine-build
     runs-on: ubuntu-latest
     steps:
-      - if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+      # A job the changes job asked for must have succeeded. Checking for
+      # failure or cancelled results was not enough: macOS jobs cancelled
+      # after waiting 15 minutes for a runner still let this check pass.
+      - name: Check every needed job's result
+        env:
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "One or more upstream jobs failed or were cancelled."
-          exit 1
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
+          bad=$(jq -r '
+            .changes.outputs as $o
+            | def wanted(k):
+                if k == "changes" then true
+                elif (k | IN("engine-tests", "ios-engine-build", "android-engine-build")) then $o.engine == "true"
+                else $o.tests == "true" end;
+            to_entries[]
+            | select(.value.result != "success" and (wanted(.key) or .value.result != "skipped"))
+            | "\(.key) was \(.value.result)"' <<< "$NEEDS")
+          if [[ -n "$bad" ]]; then
+            echo "$bad"
+            echo "One or more jobs this run needed did not succeed."
+            exit 1
+          fi
