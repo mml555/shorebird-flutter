@@ -127,7 +127,20 @@ def main():
   cargo_cwd = os.path.abspath(os.path.join(args.manifest_dir, 'library'))
 
   print(f'Running (in {cargo_cwd}): {" ".join(cmd)}', flush=True)
-  result = subprocess.run(cmd, env=env, cwd=cargo_cwd)
+  try:
+    result = subprocess.run(cmd, env=env, cwd=cargo_cwd)
+  except FileNotFoundError:
+    # Without this, the build stops on a bare "No such file or directory:
+    # 'cargo'" traceback that does not say what is missing or where to get it.
+    print(
+        'ERROR: cargo is not on PATH. The Shorebird updater is a Rust crate, '
+        'so the engine build needs a Rust toolchain: install it with rustup '
+        '(https://rustup.rs) and put cargo on PATH, or, for a toolchain kept '
+        'outside the default location, set RUSTUP_HOME and CARGO_HOME and add '
+        '$CARGO_HOME/bin to PATH before running ninja.',
+        file=sys.stderr,
+    )
+    return 1
   if result.returncode != 0:
     print(f'ERROR: cargo build failed with exit code {result.returncode}', file=sys.stderr)
     return result.returncode
