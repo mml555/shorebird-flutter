@@ -306,6 +306,45 @@ bool RouteBFullyApplied(size_t total, size_t live) {
   return total > 0 && live == total;
 }
 
+// Named, not numbered. A code nobody can read is a bool with extra steps.
+const char* RouteBResultName(int32_t result) {
+  switch (result) {
+    case Dart_RouteB_Ok:
+      return "ok";
+    case Dart_RouteB_NoIsolate:
+      return "no-isolate";
+    case Dart_RouteB_EmptyPayload:
+      return "empty-payload";
+    case Dart_RouteB_InvalidBytecode:
+      return "invalid-bytecode";
+    case Dart_RouteB_TargetMissing:
+      return "target-missing";
+    case Dart_RouteB_AlreadyInterpreted:
+      return "already-interpreted";
+    case Dart_RouteB_AttachFailed:
+      return "attach-failed";
+    case Dart_RouteB_Unsupported:
+      return "unsupported-build";
+    case Dart_RouteB_OutOfMemory:
+      return "out-of-memory";
+    case DART_ROUTE_B_NOT_ATTACHED:
+      return "not-attached";
+    default:
+      return "unknown";
+  }
+}
+
+std::vector<size_t> RouteBTargetsToRollBack(
+    size_t total,
+    size_t live,
+    const std::vector<size_t>& attached_in_order) {
+  if (RouteBFullyApplied(total, live)) {
+    return {};
+  }
+  return std::vector<size_t>(attached_in_order.rbegin(),
+                             attached_in_order.rend());
+}
+
 // Route B (selfhost), SEAM 6: activate a patch after the root isolate exists
 // and before main runs.
 //
@@ -460,7 +499,13 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
 
     int applied = 0;
     size_t live = 0;
-    for (const auto& target : container.targets) {
+    // The targets THIS run attached, in order: what a rollback puts back. A
+    // target found already interpreted was attached earlier in the process
+    // (a spawned engine shares the isolate group), where Dart may already be
+    // running it, so it is never rolled back from here.
+    std::vector<size_t> attached;
+    for (size_t index = 0; index < container.targets.size(); index++) {
+      const auto& target = container.targets[index];
       Dart_RouteBTrace trace;
       // The target's pool location is DERIVED inside
       // Dart_RouteBActivatePatchTraced from the target's own identity, so
@@ -482,43 +527,14 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
       if (result == Dart_RouteB_Ok) {
         applied++;
         live++;
+        attached.push_back(index);
         continue;
       }
       if (result == Dart_RouteB_AlreadyInterpreted) {
         // Live, not failed: see RouteBFullyApplied.
         live++;
       }
-      // Named, not numbered. A code nobody can read is a bool with extra
-      // steps.
-      const char* reason = "unknown";
-      switch (result) {
-        case Dart_RouteB_NoIsolate:
-          reason = "no-isolate";
-          break;
-        case Dart_RouteB_EmptyPayload:
-          reason = "empty-payload";
-          break;
-        case Dart_RouteB_InvalidBytecode:
-          reason = "invalid-bytecode";
-          break;
-        case Dart_RouteB_TargetMissing:
-          reason = "target-missing";
-          break;
-        case Dart_RouteB_AlreadyInterpreted:
-          reason = "already-interpreted";
-          break;
-        case Dart_RouteB_AttachFailed:
-          reason = "attach-failed";
-          break;
-        case Dart_RouteB_Unsupported:
-          reason = "unsupported-build";
-          break;
-        case Dart_RouteB_OutOfMemory:
-          reason = "out-of-memory";
-          break;
-        default:
-          break;
-      }
+      const char* reason = RouteBResultName(result);
       RouteBReport(path, "target " + target.selector + " in " + target.library +
                              " REFUSED (" + reason + ")");
     }
@@ -526,6 +542,44 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
                            std::to_string(container.targets.size()) +
                            " targets, entering main");
     if (!RouteBFullyApplied(container.targets.size(), live)) {
+      // ALL OR NOTHING. Each attach validates before it mutates, so the
+      // failing target is untouched, but the ones attached before it are live.
+      // Put them back, newest first, so main runs the release's code rather
+      // than a partly patched app. No Dart has run yet, so nothing is
+      // executing the code being swapped.
+      const auto rollback =
+          RouteBTargetsToRollBack(container.targets.size(), live, attached);
+      size_t restored = 0;
+      for (const size_t index : rollback) {
+        const auto& target = container.targets[index];
+        const int32_t rc = Dart_RouteBDeactivatePatch(target.library.c_str(),
+                                                      target.selector.c_str());
+        if (rc == Dart_RouteB_Ok) {
+          restored++;
+        } else {
+          RouteBReport(path, "target " + target.selector + " in " +
+                                 target.library + " ROLLBACK FAILED (" +
+                                 RouteBResultName(rc) + ")");
+        }
+      }
+      if (!rollback.empty()) {
+        // A target that answered AlreadyInterpreted was attached before this
+        // hook ran and is not ours to put back, so it stays live.
+        const size_t stale = live - applied;
+        std::string outcome;
+        if (restored != rollback.size()) {
+          outcome = "ROLLBACK INCOMPLETE";
+        } else if (stale == 0) {
+          outcome = "main runs the release code";
+        } else {
+          outcome = "main runs the release code except " +
+                    std::to_string(stale) +
+                    " target(s) already interpreted before this launch";
+        }
+        RouteBReport(path, "rolled back " + std::to_string(restored) + "/" +
+                               std::to_string(rollback.size()) +
+                               " attached targets, " + outcome);
+      }
       ReportRefusal();
     }
   };
@@ -658,8 +712,8 @@ bool LoadPatchOrBase(const std::string& patch_path,
   // booting once the start is reported. Both are guarded once per process,
   // so the Shell's own start report (ResolveIsolateData) is a no-op,
   // and its success report does not record the base-code boot as the patch's.
-  // This is the same sequence TryLoadFromPatch runs on iOS with the interpreter,
-  // and ApplyPatchToSettings runs on iOS without it.
+  // This is the same sequence TryLoadFromPatch runs on iOS with the
+  // interpreter, and ApplyPatchToSettings runs on iOS without it.
 #if !SHOREBIRD_ROUTE_B
   // A Route B engine's PrepareNextBootPatch already recorded the start.
   shorebird::Updater::Instance().ReportLaunchStart();
