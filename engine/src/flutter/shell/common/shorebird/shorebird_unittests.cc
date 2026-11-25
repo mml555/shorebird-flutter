@@ -450,8 +450,7 @@ TEST(Shorebird, OnlyAFullyAppliedContainerIsAPatch) {
 
 TEST(Shorebird, APartialContainerRollsBackWhatItAttachedNewestFirst) {
   // Targets 0 and 1 attached, target 2 failed: put back 1, then 0.
-  EXPECT_EQ(RouteBTargetsToRollBack(3, 2, {0, 1}),
-            (std::vector<size_t>{1, 0}));
+  EXPECT_EQ(RouteBTargetsToRollBack(3, 2, {0, 1}), (std::vector<size_t>{1, 0}));
   // Target 0 failed first: nothing was attached, nothing to put back.
   EXPECT_TRUE(RouteBTargetsToRollBack(3, 0, {}).empty());
   // Target 0 was already interpreted (live from earlier in the process) and

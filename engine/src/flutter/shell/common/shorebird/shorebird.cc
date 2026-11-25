@@ -549,8 +549,8 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
       // Put them back, newest first, so main runs the release's code rather
       // than a partly patched app. No Dart has run yet, so nothing is
       // executing the code being swapped.
-      const auto rollback = RouteBTargetsToRollBack(container.targets.size(),
-                                                    live, attached);
+      const auto rollback =
+          RouteBTargetsToRollBack(container.targets.size(), live, attached);
       size_t restored = 0;
       for (const size_t index : rollback) {
         const auto& target = container.targets[index];
@@ -559,18 +559,19 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
         if (rc == Dart_RouteB_Ok) {
           restored++;
         } else {
-          RouteBReport(path, "target " + target.selector + " in " +
-                                 target.library + " ROLLBACK FAILED (rc=" +
-                                 std::to_string(rc) + ")");
+          RouteBReport(path,
+                       "target " + target.selector + " in " + target.library +
+                           " ROLLBACK FAILED (rc=" + std::to_string(rc) + ")");
         }
       }
       if (!rollback.empty()) {
-        RouteBReport(path, "rolled back " + std::to_string(restored) + "/" +
-                               std::to_string(rollback.size()) +
-                               (restored == rollback.size()
-                                    ? " attached targets, main runs the "
-                                      "release code"
-                                    : " attached targets, ROLLBACK INCOMPLETE"));
+        RouteBReport(path,
+                     "rolled back " + std::to_string(restored) + "/" +
+                         std::to_string(rollback.size()) +
+                         (restored == rollback.size()
+                              ? " attached targets, main runs the "
+                                "release code"
+                              : " attached targets, ROLLBACK INCOMPLETE"));
       }
       ReportRefusal();
     }
@@ -704,8 +705,8 @@ bool LoadPatchOrBase(const std::string& patch_path,
   // booting once the start is reported. Both are guarded once per process,
   // so the Shell's own start report (ResolveIsolateData) is a no-op,
   // and its success report does not record the base-code boot as the patch's.
-  // This is the same sequence TryLoadFromPatch runs on iOS with the interpreter,
-  // and ApplyPatchToSettings runs on iOS without it.
+  // This is the same sequence TryLoadFromPatch runs on iOS with the
+  // interpreter, and ApplyPatchToSettings runs on iOS without it.
 #if !SHOREBIRD_ROUTE_B
   // A Route B engine's PrepareNextBootPatch already recorded the start.
   shorebird::Updater::Instance().ReportLaunchStart();
