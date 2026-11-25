@@ -7,6 +7,7 @@
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 
@@ -127,6 +128,22 @@ def main():
   cargo_cwd = os.path.abspath(os.path.join(args.manifest_dir, 'library'))
 
   print(f'Running (in {cargo_cwd}): {" ".join(cmd)}', flush=True)
+  # Checked up front rather than by catching FileNotFoundError from
+  # subprocess.run, which also fires for a missing cwd and would then blame
+  # cargo for a wrong --manifest-dir.
+  if shutil.which('cargo', path=env.get('PATH')) is None:
+    print(
+        'ERROR: cargo is not on PATH. The Shorebird updater is a Rust crate, '
+        'so the engine build needs a Rust toolchain. Install one with rustup '
+        '(https://rustup.rs) and put cargo on PATH. For a toolchain outside '
+        'the default location, set RUSTUP_HOME and CARGO_HOME and add '
+        '$CARGO_HOME/bin to PATH before building.',
+        file=sys.stderr,
+    )
+    return 1
+  if not os.path.isdir(cargo_cwd):
+    print(f'ERROR: The updater crate directory is missing: {cargo_cwd}', file=sys.stderr)
+    return 1
   result = subprocess.run(cmd, env=env, cwd=cargo_cwd)
   if result.returncode != 0:
     print(f'ERROR: cargo build failed with exit code {result.returncode}', file=sys.stderr)
