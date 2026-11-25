@@ -154,16 +154,19 @@ jobs:
     # Mac, a self-hosted runner registered to this repository only with the
     # label shorebird-flutter-mac: GitHub's macOS runners repeatedly went
     # unassigned for the 15 minutes a job may wait, and the job was then
-    # cancelled without running. A PR from a fork runs on GitHub's macOS
-    # runner instead, so code nobody here wrote never runs on that Mac. (A
-    # fork PR can edit this line too, which is why the repository requires
-    # approval before an outside contributor's workflows run.)
+    # cancelled without running. A PR from a fork is sent to GitHub's macOS
+    # runner instead. A fork PR could edit this line, so the repository also
+    # requires a maintainer's approval before an outside contributor's
+    # workflows run at all.
     #
-    # The self-host engine mirror refuses a self-hosted runner, since it
-    # installs a root CA there. It does nothing on a branch whose
-    # bin/internal/engine.version is the stock engine, as this branch's is; a
-    # branch pinning a self-built engine needs macos-latest here.
+    # The self-host engine mirror fails the job on a self-hosted runner when
+    # bin/internal/engine.version names a self-built engine, since it would
+    # install a root CA there. On a stock engine it does nothing. A branch
+    # pinning a self-built engine must run this job on macos-latest.
     runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "shorebird-flutter-mac"]') || 'macos-latest' }}
+    # A hung build would otherwise hold the Mac for the 6-hour default. (Time
+    # queued for a runner does not count.)
+    timeout-minutes: 45
 
     name: 🍎 Shorebird iOS Tests
 
@@ -182,7 +185,9 @@ jobs:
           distribution: "zulu"
           java-version: "17"
 
+      # The Mac keeps its Gradle cache between runs.
       - name: 📦 Cache Gradle
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
@@ -197,6 +202,10 @@ jobs:
         uses: ./.github/actions/selfhost-engine-mirror
 
       - name: 🍎 Run iOS Tests
+        # The tests make their projects under Directory.systemTemp; the runner
+        # empties runner.temp after each job, so they don't pile up on the Mac.
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: dart test test/ios_test.dart
         working-directory: packages/shorebird_tests
 
@@ -266,7 +275,7 @@ jobs:
 
   # Aggregator required by branch protection on shorebird/dev so the rule can
   # list a single context ("ci") instead of every matrix-expanded job above.
-  # Skipped jobs (see changes) pass it.
+  # A job the changes job did not ask for may be skipped.
   ci:
     if: always()
     needs:
@@ -293,12 +302,13 @@ jobs:
             | def wanted(k):
                 if k == "changes" then true
                 elif (k | IN("engine-tests", "ios-engine-build", "android-engine-build")) then $o.engine == "true"
-                else $o.tests == "true" end;
+                elif (k | IN("flutter-tools-tests", "shorebird-android-tests", "shorebird-ios-tests", "shorebird-macos-android-smoke-test")) then $o.tests == "true"
+                else true end;
             to_entries[]
             | select(.value.result != "success" and (wanted(.key) or .value.result != "skipped"))
             | "\(.key) was \(.value.result)"' <<< "$NEEDS")
           if [[ -n "$bad" ]]; then
             echo "$bad"
-            echo "One or more jobs this run needed did not succeed."
+            echo "One or more jobs this run needed did not succeed. A job that never got a runner shows as skipped."
             exit 1
           fi
