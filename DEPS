@@ -18,7 +18,7 @@ vars = {
   # which is private; selfhost/dart-3.14 in mml555/dart-sdk-shorebird-lineage is
   # public. Upstream's 3.50 engine calls APIs only upstream's fork has, which
   # this branch reverts or gates: see the selfhost rebase report (rebase_on_upstream.md) for the list.
-  "dart_sdk_revision": "aa157f4903cd72cee41df05572e582ce20e31dfa",
+  "dart_sdk_revision": "28f6f83fafa75a7f03808b54e17320e68733d387",
   "dart_sdk_git": "https://github.com/mml555/dart-sdk-shorebird-lineage.git",
   "updater_git": "https://github.com/mml555/shorebird-updater-mirror.git",
   "updater_rev": "64a458f034c86bca2eff6541a19d73781728b18f",
