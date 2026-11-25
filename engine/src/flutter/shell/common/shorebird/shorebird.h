@@ -110,6 +110,15 @@ bool ParseAssertPoolOffset(const std::string& raw, int64_t* out);
 /// Exposed for testing.
 bool RouteBFullyApplied(size_t total, size_t live);
 
+/// The targets to roll back after a container did not take full effect: the
+/// indices in |attached_in_order| (the targets this run attached), newest
+/// first. Empty when |live| of |total| is a full application. Exposed for
+/// testing.
+std::vector<size_t> RouteBTargetsToRollBack(
+    size_t total,
+    size_t live,
+    const std::vector<size_t>& attached_in_order);
+
 /// Arms Route B activation on |settings|: installs a
 /// root_isolate_create_callback that applies the container at |path| once the
 /// root isolate exists, after its libraries load and before main runs.

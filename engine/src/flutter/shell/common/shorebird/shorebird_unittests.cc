@@ -448,6 +448,23 @@ TEST(Shorebird, OnlyAFullyAppliedContainerIsAPatch) {
   EXPECT_FALSE(RouteBFullyApplied(0, 0)) << "an empty container is inert";
 }
 
+TEST(Shorebird, APartialContainerRollsBackWhatItAttachedNewestFirst) {
+  // Targets 0 and 1 attached, target 2 failed: put back 1, then 0.
+  EXPECT_EQ(RouteBTargetsToRollBack(3, 2, {0, 1}),
+            (std::vector<size_t>{1, 0}));
+  // Target 0 failed first: nothing was attached, nothing to put back.
+  EXPECT_TRUE(RouteBTargetsToRollBack(3, 0, {}).empty());
+  // Target 0 was already interpreted (live from earlier in the process) and
+  // target 1 attached before target 2 failed: only target 1 is this run's.
+  EXPECT_EQ(RouteBTargetsToRollBack(3, 2, {1}), (std::vector<size_t>{1}));
+}
+
+TEST(Shorebird, AFullyAppliedContainerRollsNothingBack) {
+  EXPECT_TRUE(RouteBTargetsToRollBack(3, 3, {0, 1, 2}).empty());
+  EXPECT_TRUE(RouteBTargetsToRollBack(2, 2, {1}).empty())
+      << "target 0 already interpreted, target 1 attached";
+}
+
 TEST(Shorebird, AssertPoolOffsetSidecarIsOneInteger) {
   int64_t v = -1;
   EXPECT_TRUE(ParseAssertPoolOffset("0xd4a8\n", &v));

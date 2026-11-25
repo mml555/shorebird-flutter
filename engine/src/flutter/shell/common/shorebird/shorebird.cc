@@ -306,6 +306,17 @@ bool RouteBFullyApplied(size_t total, size_t live) {
   return total > 0 && live == total;
 }
 
+std::vector<size_t> RouteBTargetsToRollBack(
+    size_t total,
+    size_t live,
+    const std::vector<size_t>& attached_in_order) {
+  if (RouteBFullyApplied(total, live)) {
+    return {};
+  }
+  return std::vector<size_t>(attached_in_order.rbegin(),
+                             attached_in_order.rend());
+}
+
 // Route B (selfhost), SEAM 6: activate a patch after the root isolate exists
 // and before main runs.
 //
@@ -460,7 +471,13 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
 
     int applied = 0;
     size_t live = 0;
-    for (const auto& target : container.targets) {
+    // The targets THIS run attached, in order: what a rollback puts back. A
+    // target found already interpreted was attached earlier in the process
+    // (a spawned engine shares the isolate group), where Dart may already be
+    // running it, so it is never rolled back from here.
+    std::vector<size_t> attached;
+    for (size_t index = 0; index < container.targets.size(); index++) {
+      const auto& target = container.targets[index];
       Dart_RouteBTrace trace;
       // The target's pool location is DERIVED inside
       // Dart_RouteBActivatePatchTraced from the target's own identity, so
@@ -482,6 +499,7 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
       if (result == Dart_RouteB_Ok) {
         applied++;
         live++;
+        attached.push_back(index);
         continue;
       }
       if (result == Dart_RouteB_AlreadyInterpreted) {
@@ -526,6 +544,34 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
                            std::to_string(container.targets.size()) +
                            " targets, entering main");
     if (!RouteBFullyApplied(container.targets.size(), live)) {
+      // ALL OR NOTHING. Each attach validates before it mutates, so the
+      // failing target is untouched, but the ones attached before it are live.
+      // Put them back, newest first, so main runs the release's code rather
+      // than a partly patched app. No Dart has run yet, so nothing is
+      // executing the code being swapped.
+      const auto rollback = RouteBTargetsToRollBack(container.targets.size(),
+                                                    live, attached);
+      size_t restored = 0;
+      for (const size_t index : rollback) {
+        const auto& target = container.targets[index];
+        const int32_t rc = Dart_RouteBDeactivatePatch(target.library.c_str(),
+                                                      target.selector.c_str());
+        if (rc == Dart_RouteB_Ok) {
+          restored++;
+        } else {
+          RouteBReport(path, "target " + target.selector + " in " +
+                                 target.library + " ROLLBACK FAILED (rc=" +
+                                 std::to_string(rc) + ")");
+        }
+      }
+      if (!rollback.empty()) {
+        RouteBReport(path, "rolled back " + std::to_string(restored) + "/" +
+                               std::to_string(rollback.size()) +
+                               (restored == rollback.size()
+                                    ? " attached targets, main runs the "
+                                      "release code"
+                                    : " attached targets, ROLLBACK INCOMPLETE"));
+      }
       ReportRefusal();
     }
   };
