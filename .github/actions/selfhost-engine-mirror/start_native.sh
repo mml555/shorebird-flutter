@@ -45,7 +45,7 @@ pick_port() {
   done
   fail "no free port found"
 }
-taken=""
+taken="" http_port="" proxy_port=""
 pick_port http_port
 pick_port proxy_port
 
