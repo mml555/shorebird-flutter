@@ -10,6 +10,8 @@
 # (about 3 GB) and the downloaded release.
 set -uo pipefail
 
+# Nothing to clean without a temp dir; never let "$tmp/..." become "/...".
+[ -n "${1:-}" ] || exit 0
 tmp="$1"
 state="$tmp/cdn-native"
 if [ -x "$tmp/selfhost/selfhost/cdn/run_native.sh" ] && [ -d "$state" ]; then

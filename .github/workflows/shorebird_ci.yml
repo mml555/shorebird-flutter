@@ -278,15 +278,14 @@ jobs:
       - name: 🤖 Run Android Smoke Test (macOS)
         env:
           TMPDIR: ${{ runner.temp }}
+          # Enables streaming subprocess output for debugging timeouts.
+          VERBOSE: "1"
         run: dart test test/android_test.dart --name "can build an apk"
         working-directory: packages/shorebird_tests
 
       - name: 🧹 Stop the self-host engine mirror
         if: always()
         uses: ./.github/actions/selfhost-engine-mirror/stop
-        env:
-          # Enables streaming subprocess output for debugging timeouts.
-          VERBOSE: "1"
 
   # The engine workflows, here rather than on their own pull_request
   # triggers so the required `ci` check below waits on them: before, engine
