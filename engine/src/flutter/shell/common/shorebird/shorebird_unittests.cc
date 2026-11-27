@@ -458,6 +458,15 @@ TEST(Shorebird, APartialContainerRollsBackWhatItAttachedNewestFirst) {
   EXPECT_EQ(RouteBTargetsToRollBack(3, 2, {1}), (std::vector<size_t>{1}));
 }
 
+TEST(Shorebird, AContainerStopsAtItsFirstRefusal) {
+  EXPECT_FALSE(RouteBStopsAfter(0)) << "ok: go on";
+  EXPECT_FALSE(RouteBStopsAfter(5))
+      << "already-interpreted is live, not refused: go on";
+  EXPECT_TRUE(RouteBStopsAfter(3)) << "invalid-bytecode";
+  EXPECT_TRUE(RouteBStopsAfter(4)) << "target-missing";
+  EXPECT_TRUE(RouteBStopsAfter(12345)) << "an unknown code is a refusal";
+}
+
 TEST(Shorebird, RouteBResultCodesAreReportedByName) {
   EXPECT_STREQ(RouteBResultName(0), "ok");
   // DART_ROUTE_B_NOT_ATTACHED: a rollback found nothing to put back.

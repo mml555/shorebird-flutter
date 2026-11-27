@@ -111,6 +111,11 @@ bool ParseAssertPoolOffset(const std::string& raw, int64_t* out);
 /// Exposed for testing.
 bool RouteBFullyApplied(size_t total, size_t live);
 
+/// Whether a container activates no more targets after one answered
+/// |result|: true for a refusal, false for ok and for already-interpreted
+/// (live, attached earlier in the process). Exposed for testing.
+bool RouteBStopsAfter(int32_t result);
+
 /// The report name of a Route B attach or rollback result code, such as
 /// "target-missing"; "unknown" for a code it does not know. Exposed for
 /// testing.
