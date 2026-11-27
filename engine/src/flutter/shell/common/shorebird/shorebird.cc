@@ -543,10 +543,10 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
         // nothing more. A refused load can leave its payload's libraries
         // registered and partly declared in the VM, and a later target's load
         // would run on top of them.
-        RouteBReport(path, "stopped at the first refusal, " +
-                               std::to_string(container.targets.size() -
-                                              index - 1) +
-                               " later targets not activated");
+        RouteBReport(path,
+                     "stopped at the first refusal, " +
+                         std::to_string(container.targets.size() - index - 1) +
+                         " later targets not activated");
         break;
       }
     }
