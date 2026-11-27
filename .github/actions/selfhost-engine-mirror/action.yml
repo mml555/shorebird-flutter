@@ -6,7 +6,12 @@ description: >-
   download.shorebird.dev, start the self-host CDN mirror on this runner from
   that release and point bin/flutter at it. Does nothing for any other engine.
   Linux runners run the mirror under Docker; macOS runners, which have none,
-  run it as plain processes (selfhost/cdn/run_native.sh).
+  run it as plain processes (selfhost/cdn/run_native.sh). A GitHub-hosted
+  runner gets https and a throwaway root CA; a self-hosted macOS runner (the
+  owner's Mac) gets plain http on 127.0.0.1 and nothing outside its temp
+  directory is touched. The release's overlay may be one tar or parts.
+  A self-hosted job must follow this action with
+  ./.github/actions/selfhost-engine-mirror/stop in an `if: always()` step.
 
 inputs:
   selfhost-ref:
@@ -37,11 +42,13 @@ runs:
           echo "::error::Looking up release engine-$engine failed: $out"
           exit 1
         fi
-        # The mirror trusts a throwaway root CA system-wide and leaves it, and
-        # its servers, running after the job. That is only acceptable on a
-        # runner that is thrown away after the job.
-        if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
-          echo "::error::Engine $engine needs the self-host mirror, which installs a root CA on the runner. Run this job on a GitHub-hosted runner."
+        # A GitHub-hosted runner is thrown away after the job, so the mirror
+        # may trust a throwaway root CA system-wide there. A self-hosted
+        # macOS runner gets the native, plain-http mirror that touches nothing
+        # outside RUNNER_TEMP (start_native.sh). Any other self-hosted runner
+        # is refused: Docker there leaves containers and a root CA behind.
+        if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ] && [ "$RUNNER_OS" != macOS ]; then
+          echo "::error::Engine $engine needs the self-host mirror, which on this runner would leave a root CA and Docker containers behind. Run this job on a GitHub-hosted runner or a self-hosted macOS one."
           exit 1
         fi
         # The release's files can be replaced in place; check them against the
@@ -56,6 +63,7 @@ runs:
         fi
         rel="$RUNNER_TEMP/engine-release"
         mkdir -p "$rel"
+        # The overlay tar itself (one asset, or parts) is fetched later.
         if ! gh release download "engine-$engine" -R "$GITHUB_REPOSITORY" -D "$rel" --clobber \
             -p SHA256SUMS -p "overlay-$engine.txt" \
             || [ ! -f "$rel/SHA256SUMS" ] || [ ! -f "$rel/overlay-$engine.txt" ]; then
@@ -178,10 +186,10 @@ runs:
         git -C "$src" checkout -q FETCH_HEAD
         cdn="$src/selfhost/cdn"
 
-        # SHA256SUMS was checked against the pin by the find step.
-        gh release download "engine-$ENGINE" -R "$GITHUB_REPOSITORY" -D "$rel" --clobber \
-          -p "overlay-$ENGINE.tar" -p "experimental_hashes-$ENGINE.map" -p "engine_stamp-$ENGINE.json"
-        (cd "$rel" && shasum -a 256 -c SHA256SUMS)
+        # SHA256SUMS was checked against the pin by the find step. The overlay
+        # is one tar or parts, joined and checked against SHA256SUMS here; the
+        # map and stamp are checked in the same pass.
+        "$ACTION_PATH/fetch_overlay.sh" "$ENGINE" "$rel"
         tar -xf "$rel/overlay-$ENGINE.tar" -C "$cdn/overlay"
         # Newer releases also carry overlay-extra-<engine>.tar (sky_engine.zip
         # and the like), pinned in release_sums. It must not overwrite the
@@ -192,6 +200,11 @@ runs:
         # The mirror's processes outlive this step; keep the token out of them.
         unset GH_TOKEN
         cat "$rel/experimental_hashes-$ENGINE.map" >> "$cdn/experimental_hashes.map"
+
+        if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
+          "$ACTION_PATH/start_native.sh" "$cdn" "$RUNNER_TEMP/cdn-native"
+          exit 0
+        fi
 
         # Gradle refuses a plain-http Maven repository, so serve https with a
         # throwaway CA trusted by this runner's JDK and OS store. As root: the

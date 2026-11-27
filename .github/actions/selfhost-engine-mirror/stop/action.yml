@@ -1,0 +1,18 @@
+name: Stop the self-host engine mirror
+description: >-
+  Stops the mirror that ../action.yml started on a self-hosted macOS runner and
+  removes what it left in the runner's temp directory (not its Caddy build,
+  which actions/cache saves afterwards). Run it in an `if: always()` step after
+  the jobs that use the mirror; it does nothing on a GitHub-hosted runner and
+  when no mirror was started.
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
+          "$ACTION_PATH/../stop_native.sh" "$RUNNER_TEMP"
+        fi

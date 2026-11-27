@@ -26,7 +26,7 @@ jobs:
   # shorebird/dev always run them (release branches get no push run). No job
   # in this file uses a billed GitHub runner: standard runners are free because
   # the repo is public. (The engine workflows it calls build on Namespace; the
-  # iOS tests use the owner's Mac for this repository's own branches.)
+  # macOS jobs use the owner's Mac for this repository's own branches.)
   #
   # It also decides whether a PR runs the engine jobs (engine-tests,
   # ios-engine-build, android-engine-build): only when it touches DEPS,
@@ -85,7 +85,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
 
-    runs-on: ${{ matrix.os }}
+    # The macOS leg runs on the owner's Mac for pushes and PRs from this
+    # repository's own branches, and on GitHub's macOS runner for PRs from
+    # forks; see shorebird-ios-tests for why.
+    runs-on: ${{ matrix.os != 'macos-latest' && matrix.os || ((github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "shorebird-flutter-mac"]') || 'macos-latest') }}
+    # A hung test would otherwise hold the Mac for the 6-hour default. (Time
+    # queued for a runner does not count.)
+    timeout-minutes: 90
 
     name: 🛠️ Flutter Tools Tests (${{ matrix.os }})
 
@@ -102,8 +108,21 @@ jobs:
         uses: ./.github/actions/selfhost-engine-mirror
 
       - name: 🐦 Run Flutter Tools Tests
-        run: ../../bin/flutter test test/general.shard
+        # The Mac is shared (10 cores, other projects' agents, other runners),
+        # and flutter test defaults to all cores but two. Three test processes
+        # there; GitHub's runners keep the default. Test temp dirs go under
+        # runner.temp, which the runner empties after the job.
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          extra=()
+          if [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then extra=(--concurrency=3); fi
+          ../../bin/flutter test ${extra[@]+"${extra[@]}"} test/general.shard
         working-directory: packages/flutter_tools
+
+      - name: 🧹 Stop the self-host engine mirror
+        if: always()
+        uses: ./.github/actions/selfhost-engine-mirror/stop
 
   shorebird-android-tests:
     needs: changes
@@ -159,10 +178,10 @@ jobs:
     # requires a maintainer's approval before an outside contributor's
     # workflows run at all.
     #
-    # The self-host engine mirror fails the job on a self-hosted runner when
-    # bin/internal/engine.version names a self-built engine, since it would
-    # install a root CA there. On a stock engine it does nothing. A branch
-    # pinning a self-built engine must run this job on macos-latest.
+    # When bin/internal/engine.version names a self-built engine, the
+    # self-host engine mirror serves it from a native, plain-http process on
+    # 127.0.0.1 under runner.temp, with no root CA, and the stop step below
+    # removes it. On a stock engine the mirror does nothing.
     runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "shorebird-flutter-mac"]') || 'macos-latest' }}
     # A hung build would otherwise hold the Mac for the 6-hour default. (Time
     # queued for a runner does not count.)
@@ -209,12 +228,21 @@ jobs:
         run: dart test test/ios_test.dart
         working-directory: packages/shorebird_tests
 
+      - name: 🧹 Stop the self-host engine mirror
+        if: always()
+        uses: ./.github/actions/selfhost-engine-mirror/stop
+
   shorebird-macos-android-smoke-test:
     needs: changes
     if: needs.changes.outputs.tests == 'true'
     # Quick sanity check that Android builds work on macOS too. Its own job so
     # it runs alongside the iOS tests instead of after them.
-    runs-on: macos-latest
+    #
+    # Runs on the owner's Mac for pushes and PRs from this repository's own
+    # branches, and on GitHub's macOS runner for PRs from forks; see
+    # shorebird-ios-tests for why.
+    runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "shorebird-flutter-mac"]') || 'macos-latest' }}
+    timeout-minutes: 45
 
     name: 🤖 Shorebird Android Smoke Test (macOS)
 
@@ -232,7 +260,9 @@ jobs:
           distribution: "zulu"
           java-version: "17"
 
+      # The Mac keeps its Gradle cache between runs.
       - name: 📦 Cache Gradle
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
@@ -246,11 +276,16 @@ jobs:
         uses: ./.github/actions/selfhost-engine-mirror
 
       - name: 🤖 Run Android Smoke Test (macOS)
-        run: dart test test/android_test.dart --name "can build an apk"
-        working-directory: packages/shorebird_tests
         env:
+          TMPDIR: ${{ runner.temp }}
           # Enables streaming subprocess output for debugging timeouts.
           VERBOSE: "1"
+        run: dart test test/android_test.dart --name "can build an apk"
+        working-directory: packages/shorebird_tests
+
+      - name: 🧹 Stop the self-host engine mirror
+        if: always()
+        uses: ./.github/actions/selfhost-engine-mirror/stop
 
   # The engine workflows, here rather than on their own pull_request
   # triggers so the required `ci` check below waits on them: before, engine
