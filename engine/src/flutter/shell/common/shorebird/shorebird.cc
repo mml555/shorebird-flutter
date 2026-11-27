@@ -306,6 +306,10 @@ bool RouteBFullyApplied(size_t total, size_t live) {
   return total > 0 && live == total;
 }
 
+bool RouteBStopsAfter(int32_t result) {
+  return result != Dart_RouteB_Ok && result != Dart_RouteB_AlreadyInterpreted;
+}
+
 // Named, not numbered. A code nobody can read is a bool with extra steps.
 const char* RouteBResultName(int32_t result) {
   switch (result) {
@@ -537,16 +541,15 @@ void InstallRouteBActivationHook(Settings& settings, const std::string& path) {
       const char* reason = RouteBResultName(result);
       RouteBReport(path, "target " + target.selector + " in " + target.library +
                              " REFUSED (" + reason + ")");
-      if (result != Dart_RouteB_AlreadyInterpreted &&
-          index + 1 < container.targets.size()) {
+      if (RouteBStopsAfter(result) && index + 1 < container.targets.size()) {
         // ALL OR NOTHING already decided: this container rolls back. Activate
         // nothing more. A refused load can leave its payload's libraries
         // registered and partly declared in the VM, and a later target's load
         // would run on top of them.
-        RouteBReport(path,
-                     "stopped at the first refusal, " +
-                         std::to_string(container.targets.size() - index - 1) +
-                         " later targets not activated");
+        const size_t skipped = container.targets.size() - index - 1;
+        RouteBReport(path, "stopped at the first refusal, " +
+                               std::to_string(skipped) + " later target" +
+                               (skipped == 1 ? "" : "s") + " not activated");
         break;
       }
     }
