@@ -30,21 +30,24 @@ export TMPDIR="$state/tmp" GOPATH="$state/go/path" GOCACHE="$state/go/build" \
 mkdir -p "$TMPDIR"
 
 busy() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+# pick_port <var>: sets <var> to a free port no earlier call chose. It assigns
+# rather than echoes: in a $(...) subshell its record of taken ports, and its
+# fail, would not reach this shell, and two calls could pick the same port.
 pick_port() {
   local p
   for _ in $(seq 1 200); do
     p=$((20000 + RANDOM % 30000))
-    if ! busy "$p" && [[ " ${taken:-} " != *" $p "* ]]; then
-      taken="${taken:-} $p"
-      echo "$p"
+    if ! busy "$p" && [[ " $taken " != *" $p "* ]]; then
+      taken="$taken $p"
+      printf -v "$1" '%s' "$p"
       return 0
     fi
   done
   fail "no free port found"
 }
 taken=""
-http_port="$(pick_port)"
-proxy_port="$(pick_port)"
+pick_port http_port
+pick_port proxy_port
 
 # run_native.sh fixes artifact_proxy's port at 8081. Make it ours. A different
 # run_native.sh (a new selfhost-ref) that already reads PROXY_PORT needs no
